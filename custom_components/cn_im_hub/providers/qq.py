@@ -19,7 +19,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 import voluptuous as vol
-from custom_components.claw_assistant.runtime.events import EVENT_LIVE_PROGRESS
 
 from ..command import execute_command, parse_command
 from ..camera_media import (
@@ -29,7 +28,7 @@ from ..camera_media import (
     async_resolve_camera_entity,
     resolve_ha_local_path,
 )
-from ..const import CONF_QQ_APP_ID, CONF_QQ_CLIENT_SECRET, PROVIDER_QQ
+from ..const import CLAW_LIVE_PROGRESS_EVENT, CONF_QQ_APP_ID, CONF_QQ_CLIENT_SECRET, PROVIDER_QQ
 from ..egdettspy import async_generate_tts_mp3, is_edge_tts_available
 from ..known_targets import async_get_tracker
 from ..models import ProviderRuntime
@@ -468,7 +467,7 @@ class QQClient:
                 return
             queue.put_nowait(text)
 
-        unsub = self._hass.bus.async_listen(EVENT_LIVE_PROGRESS, _listener)
+        unsub = self._hass.bus.async_listen(CLAW_LIVE_PROGRESS_EVENT, _listener)
         last_emit = 0.0
         try:
             while True:

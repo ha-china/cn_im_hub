@@ -10,7 +10,6 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
-from custom_components.claw_assistant.runtime.events import EVENT_LIVE_PROGRESS
 
 from ..camera_media import (
     async_capture_camera_gif,
@@ -21,6 +20,7 @@ from ..camera_media import (
 )
 from ..command import execute_command, parse_command
 from ..const import (
+    CLAW_LIVE_PROGRESS_EVENT,
     CONF_WECHAT_ACCOUNT_ID,
     CONF_WECHAT_BASE_URL,
     CONF_WECHAT_TOKEN,
@@ -409,7 +409,7 @@ class WeixinClient:
             if text:
                 queue.put_nowait(text)
 
-        unsub = self._hass.bus.async_listen(EVENT_LIVE_PROGRESS, _listener)
+        unsub = self._hass.bus.async_listen(CLAW_LIVE_PROGRESS_EVENT, _listener)
         last_sent = ""
         try:
             while True:

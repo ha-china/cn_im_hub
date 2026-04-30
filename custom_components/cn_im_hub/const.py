@@ -49,6 +49,13 @@ WECHAT_DEFAULT_BASE_URL: Final = "https://ilinkai.weixin.qq.com"
 
 SERVICE_SEND_MESSAGE: Final = "send_message"
 
+# Event bus topic published by the claw_assistant integration when an LLM
+# inference produces an incremental progress chunk. Subscribed by the QQ /
+# WeChat providers to stream "still working…" hints back to the user.
+# This is a string-only contract so cn_im_hub must NOT import claw_assistant
+# at module load — the integration is optional and may be missing.
+CLAW_LIVE_PROGRESS_EVENT: Final = "ha_crack_live_progress"
+
 ATTR_PROVIDER: Final = "provider"
 ATTR_TARGET: Final = "target"
 ATTR_MESSAGE: Final = "message"
