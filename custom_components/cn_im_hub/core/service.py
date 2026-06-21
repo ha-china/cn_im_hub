@@ -12,7 +12,6 @@ import voluptuous as vol
 from ..const import (
     ATTR_APPROVAL_ID,
     ATTR_CAMERA_ENTITY,
-    ATTR_CARD_JSON,
     ATTR_CHANNEL,
     ATTR_FILE_NAME,
     ATTR_FILE_PATH,
@@ -72,7 +71,6 @@ SERVICE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_RECORD_DURATION): vol.Coerce(int),
         vol.Optional(ATTR_LOOKBACK, default=0): vol.Coerce(int),
         vol.Optional(ATTR_GIF_FPS, default=2): vol.Coerce(int),
-        vol.Optional(ATTR_CARD_JSON, default=""): cv.string,
     }
 )
 
@@ -121,21 +119,7 @@ def _extract_call_data(call: ServiceCall) -> dict[str, Any]:
         "lookback": int(d.get(ATTR_LOOKBACK, 0) or 0),
         "gif_fps": int(d.get(ATTR_GIF_FPS, 2) or 2),
         "wechat_account_id": _s(ATTR_WECHAT_ACCOUNT_ID),
-        "card_json": _s(ATTR_CARD_JSON),
     }
-
-
-async def _handle_card(hass, provider, requested, p, resolved_target, target_type):
-    card = _json.loads(p["card_json"])
-    if p["camera_entity"] and requested == "feishu":
-        resolved = await async_resolve_camera_entity(hass, p["camera_entity"])
-        if resolved is not None:
-            from homeassistant.components.camera import async_get_image
-            image = await async_get_image(hass, resolved)
-            if image and image.content:
-                from ..providers.feishu import async_inject_camera_snapshot
-                await async_inject_camera_snapshot(hass, card, image.content, provider.client)
-    await provider.send_card(resolved_target, card, target_type)
 
 
 async def _handle_camera(hass, provider, requested, p, resolved_target, target_type):
@@ -195,7 +179,7 @@ async def _handle_file(hass, provider, requested, p, resolved_target, target_typ
 
 async def _handle_send_message(hass: HomeAssistant, call: ServiceCall) -> None:
     p = _extract_call_data(call)
-    has_content = p["message"] or p["camera_entity"] or p["file_path"] or p["file_url"] or p["tts_text"] or p["card_json"]
+    has_content = p["message"] or p["camera_entity"] or p["file_path"] or p["file_url"] or p["tts_text"]
     if not has_content:
         return
 
@@ -219,7 +203,6 @@ async def _handle_send_message(hass: HomeAssistant, call: ServiceCall) -> None:
         raise ValueError("target is required, or select a known target in the provider target selector entity")
 
     dispatch: list[tuple[bool, Any]] = [
-        (bool(p["card_json"]), lambda: _handle_card(hass, provider, requested, p, resolved_target, target_type)),
         (bool(p["approval_id"]), lambda: _dispatch_approval(provider, requested, p, resolved_target, target_type)),
         (bool(p["tts_text"]), lambda: _dispatch_tts(provider, requested, p, resolved_target, target_type)),
         (bool(p["camera_entity"]), lambda: _handle_camera(hass, provider, requested, p, resolved_target, target_type)),

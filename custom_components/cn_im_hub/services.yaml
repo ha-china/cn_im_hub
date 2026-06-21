@@ -124,8 +124,3 @@ send_message:
         number:
           min: 1
           max: 10
-    card_json:
-      required: false
-      description: JSON string of an interactive card to send. When provided, other message fields are ignored.
-      selector:
-        text:

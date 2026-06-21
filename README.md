@@ -41,8 +41,6 @@ Aggregate common Chinese IM platforms into one Home Assistant integration.
   Voice is passed to HA only when the platform already provides transcript text.
 - 飞书自动卡片回复：当回复内容较长或包含列表/标题等结构时，自动以卡片形式发送  
   Feishu auto-card reply: responses are automatically sent as interactive cards when they are long or contain structured content (lists, headings, etc.).
-- 飞书卡片 + 摄像头截图：`send_message` 同时传入 `card_json` 和 `camera_entity` 时，自动抓拍并嵌入卡片  
-  Feishu card + camera snapshot: when `card_json` and `camera_entity` are both provided, the camera snapshot is automatically captured and injected into the card.
 
 ## 安装 / Installation
 
@@ -67,7 +65,6 @@ Aggregate common Chinese IM platforms into one Home Assistant integration.
   - `target`
   - `message`
   - `camera_entity`
-  - `card_json`（飞书卡片 JSON，与 `camera_entity` 组合可自动嵌入截图） / Feishu card JSON; combined with `camera_entity` auto-injects snapshot
   - `wechat_account_id`（仅多微信账号时可选） / optional for multi-WeChat routing
 
 ## 目标地址格式 / Target Routing

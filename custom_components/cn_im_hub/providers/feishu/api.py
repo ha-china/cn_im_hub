@@ -80,10 +80,6 @@ class FeishuApiClient:
         except Exception as err:
             _LOGGER.warning("Failed to send message back to Feishu: %s", err)
 
-    async def async_send_card_message(self, *, receive_id: str, card: dict[str, Any], receive_id_type: str = DEFAULT_FEISHU_TARGET_TYPE) -> None:
-        content = json.dumps(card, ensure_ascii=False)
-        await self._async_send_message(receive_id, "interactive", content, receive_id_type)
-
     async def async_upload_image(self, image_data: bytes, *, strict: bool = False) -> str | None:
         token = await self.async_get_tenant_access_token()
         form = aiohttp.FormData()
@@ -198,8 +194,6 @@ class FeishuApiClient:
         data = await async_read_json(response)
         if response.status != 200 or data.get("code") != 0:
             raise RuntimeError(f"update text failed: {data.get('msg', response.reason)}")
-
-
 async def async_inject_camera_snapshot(hass: HomeAssistant, card: dict[str, Any], image_data: bytes, ws_client: Any) -> bool:
     app_id = getattr(ws_client, "_app_id", "")
     app_secret = getattr(ws_client, "_app_secret", "")

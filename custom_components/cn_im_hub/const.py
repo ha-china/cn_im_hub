@@ -74,7 +74,6 @@ ATTR_APPROVAL_ID: Final = "approval_id"
 ATTR_RECORD_DURATION: Final = "record_duration"
 ATTR_LOOKBACK: Final = "lookback"
 ATTR_GIF_FPS: Final = "gif_fps"
-ATTR_CARD_JSON: Final = "card_json"
 DEFAULT_VIDEO_RECORD_DURATION: Final = 10
 DEFAULT_GIF_DURATION: Final = 3
 
