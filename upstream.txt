@@ -7,38 +7,44 @@ Feishu
 - URL: https://open.feishu.cn/
 - npm: https://www.npmjs.com/package/@larksuiteoapi/feishu-openclaw-plugin
 - npm latest: 2026.3.8
-- Last checked: 2026-03-31
+- Last checked: 2026-05-09
 
 WeCom
 - Source: WeCom Open Platform
 - URL: https://developer.work.weixin.qq.com/
+- Source package: @wecom/wecom-openclaw-plugin
+- npm: https://www.npmjs.com/package/@wecom/wecom-openclaw-plugin
+- npm latest: 2026.5.7
+- Source package: @wecom/wecom-openclaw-cli
 - npm: https://www.npmjs.com/package/@wecom/wecom-openclaw-cli
-- npm latest: 1.0.22
-- Last checked: 2026-03-31
+- npm latest (cli): 1.1.0
+- Notes: Official plugin supports Bot mode, Agent mode, interactive onboarding, multi-account routing, Agent/Bot webhook entrypoints, and Bot WebSocket to Agent HTTP fallback.
+- Last checked: 2026-05-09
 
 QQ
 - Source: Hello Claw / OpenClaw QQ bot flow
 - URL: https://datawhalechina.github.io/hello-claw/cn/adopt/chapter3/
 - npm: https://www.npmjs.com/package/@sliverp/qqbot
 - npm latest: 1.6.1
-- Last checked: 2026-03-31
+- Last checked: 2026-05-09
 
 DingTalk
 - Source: DingTalk OpenClaw access docs
 - URL: https://open.dingtalk.com/document/dingstart/build-dingtalk-ai-employees
 - npm: https://www.npmjs.com/package/@dingtalk-real-ai/dingtalk-connector
-- npm latest: 0.8.9
-- Last checked: 2026-03-31
+- npm latest: 0.8.20
+- Last checked: 2026-05-09
 
 WeChat
 - Source package: @tencent-weixin/openclaw-weixin
 - npm: https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin
 - Source package: @tencent-weixin/openclaw-weixin-cli
 - npm: https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin-cli
-- npm latest: 2.1.1
+- npm latest: 2.4.3
+- npm latest (cli): 2.1.3
 - Local reference: .tmp_cli_ref/weixin-plugin-2.0.1/package/ and .tmp_cli_ref/package/
-- Notes: Weixin 2.0.x is documented as active for OpenClaw >= 2026.3.22; evaluate 2.1.1 compatibility before adopting.
-- Last checked: 2026-03-31
+- Notes: Weixin 2.x is documented as active for OpenClaw >= 2026.3.22; current npm latest is 2.4.3, CLI latest is 2.1.3, and image upload response may return upload_full_url instead of upload_param.
+- Last checked: 2026-05-09
 
 XiaoYi
 - Source package: @ynhcj/xiaoyi
@@ -48,4 +54,4 @@ XiaoYi
   - https://developer.huawei.com/consumer/cn/doc/service/open-claw-base-0000002518704040
   - https://developer.huawei.com/consumer/cn/doc/service/quick-start-0000002469548009
   - https://developer.huawei.com/consumer/cn/doc/service/openclaw-0000002518410344
-- Last checked: 2026-03-31
+- Last checked: 2026-05-09
