@@ -14,9 +14,12 @@ _LIVE_PROGRESS_SEND_INTERVAL_SECONDS = 2.0
 from ...core.command import execute_command, parse_command
 from ...core.known_targets import async_get_tracker
 from ...const import (
+    CONF_FEISHU_ENCRYPT_KEY,
     CONF_FEISHU_APP_ID,
     CONF_FEISHU_APP_SECRET,
+    CONF_FEISHU_VERIFICATION_TOKEN,
     DEFAULT_FEISHU_TARGET_TYPE,
+    DOMAIN,
     PROVIDER_FEISHU,
 )
 from ...media.card import CardSpec, parse_card_source
@@ -57,9 +60,17 @@ async def async_setup_provider(
     subentry_id: str,
 ) -> ProviderRuntime:
     app_id, app_secret = _credentials(config)
+    verification_token = str(config.get(CONF_FEISHU_VERIFICATION_TOKEN, "")).strip()
+    encrypt_key = str(config.get(CONF_FEISHU_ENCRYPT_KEY, "")).strip()
     show_live_progress = bool(config.get(_CONF_FEISHU_SHOW_LIVE_PROGRESS, False))
     api = FeishuApiClient(hass, app_id, app_secret)
     await api.async_validate_connection()
+    feishu_configs: dict[str, dict[str, str]] = hass.data.setdefault(DOMAIN, {}).setdefault("feishu_callback_configs", {})
+    feishu_configs[subentry_id] = {
+        "app_id": app_id,
+        "verification_token": verification_token,
+        "encrypt_key": encrypt_key,
+    }
     tracker = await async_get_tracker(hass, subentry_id)
     ws = FeishuWsClient(
         hass=hass,
@@ -358,6 +369,8 @@ def _build_schema(current: dict[str, Any]) -> vol.Schema:
         {
             vol.Required(CONF_FEISHU_APP_ID, default=current.get(CONF_FEISHU_APP_ID, "")): str,
             vol.Required(CONF_FEISHU_APP_SECRET, default=current.get(CONF_FEISHU_APP_SECRET, "")): str,
+            vol.Optional(CONF_FEISHU_VERIFICATION_TOKEN, default=current.get(CONF_FEISHU_VERIFICATION_TOKEN, "")): str,
+            vol.Optional(CONF_FEISHU_ENCRYPT_KEY, default=current.get(CONF_FEISHU_ENCRYPT_KEY, "")): str,
             vol.Optional(_CONF_FEISHU_SHOW_LIVE_PROGRESS, default=current.get(_CONF_FEISHU_SHOW_LIVE_PROGRESS, False)): bool,
         }
     )
