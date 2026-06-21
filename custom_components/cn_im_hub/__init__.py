@@ -25,11 +25,6 @@ RETRY_DELAY_SECONDS = 5
 _BOOL_MAP = {"true": True, "false": False}
 
 
-def _remove_feishu_callback_config(hass: HomeAssistant, subentry_id: str) -> None:
-    feishu_configs = hass.data.get(DOMAIN, {}).get("feishu_callback_configs", {})
-    feishu_configs.pop(subentry_id, None)
-
-
 def _normalize_stored_value(value: Any) -> Any:
     return (
         {k: _normalize_stored_value(v) for k, v in value.items()} if isinstance(value, dict)
@@ -40,8 +35,6 @@ def _normalize_stored_value(value: Any) -> Any:
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN].setdefault("feishu_callback_configs", {})
     return True
 
 
@@ -103,9 +96,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from .core.tmp_cleanup import async_setup_tmp_cleanup
     await async_setup_tmp_cleanup(hass)
 
-    from .providers.feishu import FeishuCardCallbackView
-    hass.http.register_view(FeishuCardCallbackView(hass))
-
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
@@ -116,10 +106,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    for runtime_key, rt in entry.runtime_data.providers.items():
-        provider_key, _, subentry_id = runtime_key.partition(":")
-        if provider_key == "feishu" and subentry_id:
-            _remove_feishu_callback_config(hass, subentry_id)
+    for rt in entry.runtime_data.providers.values():
         await rt.stop()
 
     has_remaining = any(

@@ -34,8 +34,6 @@ WECHAT_CDN_BASE_URL: Final = "https://c2cwxappimg.weixin.qq.com"
 
 CONF_FEISHU_APP_ID: Final = "app_id"
 CONF_FEISHU_APP_SECRET: Final = "app_secret"
-CONF_FEISHU_VERIFICATION_TOKEN: Final = "verification_token"
-CONF_FEISHU_ENCRYPT_KEY: Final = "encrypt_key"
 FEISHU_TOKEN_URL: Final = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
 
 CONF_WECOM_BOT_ID: Final = "bot_id"

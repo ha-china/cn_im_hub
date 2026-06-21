@@ -14,17 +14,12 @@ _LIVE_PROGRESS_SEND_INTERVAL_SECONDS = 2.0
 from ...core.command import execute_command, parse_command
 from ...core.known_targets import async_get_tracker
 from ...const import (
-    CONF_FEISHU_ENCRYPT_KEY,
     CONF_FEISHU_APP_ID,
     CONF_FEISHU_APP_SECRET,
-    CONF_FEISHU_VERIFICATION_TOKEN,
     DEFAULT_FEISHU_TARGET_TYPE,
-    DOMAIN,
     PROVIDER_FEISHU,
 )
-from ...media.card import CardSpec, parse_card_source
 from ...media.rich_media import (
-    CardSegment,
     FileSegment,
     GifSegment,
     ImageSegment,
@@ -38,8 +33,6 @@ from .prompt import build_feishu_prompt
 from ...models import ProviderRuntime
 from ..base import ProviderSpec
 from .api import FeishuApiClient, async_inject_camera_snapshot
-from .webhook import FeishuCardCallbackView
-from .card import build_feishu_card
 from .ws import FeishuWsClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,17 +53,9 @@ async def async_setup_provider(
     subentry_id: str,
 ) -> ProviderRuntime:
     app_id, app_secret = _credentials(config)
-    verification_token = str(config.get(CONF_FEISHU_VERIFICATION_TOKEN, "")).strip()
-    encrypt_key = str(config.get(CONF_FEISHU_ENCRYPT_KEY, "")).strip()
     show_live_progress = bool(config.get(_CONF_FEISHU_SHOW_LIVE_PROGRESS, False))
     api = FeishuApiClient(hass, app_id, app_secret)
     await api.async_validate_connection()
-    feishu_configs: dict[str, dict[str, str]] = hass.data.setdefault(DOMAIN, {}).setdefault("feishu_callback_configs", {})
-    feishu_configs[subentry_id] = {
-        "app_id": app_id,
-        "verification_token": verification_token,
-        "encrypt_key": encrypt_key,
-    }
     tracker = await async_get_tracker(hass, subentry_id)
     ws = FeishuWsClient(
         hass=hass,
@@ -174,10 +159,8 @@ def _message_handler_factory(hass, api, tracker, agent_id, show_live_progress: b
         reply = str(result)
         if not reply:
             return
-        prefix_name, reply_body = extract_reply_prefix(reply)
-        card_title = prefix_name or "Claw Assistant"
-        has_card = "[CARD:" in reply
-        segments = parse_reply_segments(reply_body if has_card else reply)
+        _, reply_body = extract_reply_prefix(reply)
+        segments = parse_reply_segments(reply_body)
         for seg in segments:
             if isinstance(seg, TextSegment):
                 await _reply(api, receive_id, receive_type, seg.text)
@@ -193,13 +176,6 @@ def _message_handler_factory(hass, api, tracker, agent_id, show_live_progress: b
                 except Exception as err:
                     _LOGGER.warning("Feishu image send failed: %s", err)
                     await _reply(api, receive_id, receive_type, f"Image send failed: {err}")
-            elif isinstance(seg, CardSegment):
-                card_spec = parse_card_source(seg.source)
-                if card_spec:
-                    feishu_card = build_feishu_card(card_spec, title=card_title)
-                    await _reply(api, receive_id, receive_type, card_spec.text or " ", feishu_card)
-                else:
-                    await _reply(api, receive_id, receive_type, f"Invalid card: {seg.source[:100]}")
             elif isinstance(seg, VideoSegment):
                 try:
                     result = await _resolve_video(hass, seg.source)
@@ -317,13 +293,7 @@ async def _resolve_gif(hass: HomeAssistant, source: str) -> tuple[bytes, str] | 
     return None
 
 
-async def _reply(api: FeishuApiClient, receive_id: str, receive_type: str, text: str, card: dict[str, Any] | None = None) -> None:
-    if card:
-        try:
-            await api.async_send_card_message(receive_id=receive_id, card=card, receive_id_type=receive_type)
-            return
-        except Exception as err:
-            _LOGGER.warning("Card send failed, falling back to text: %s", err)
+async def _reply(api: FeishuApiClient, receive_id: str, receive_type: str, text: str) -> None:
     await api.async_send_safe_reply(receive_id=receive_id, receive_id_type=receive_type, text=text)
 
 
@@ -340,9 +310,6 @@ def _runtime_factory(ws, api, tracker, subentry_id: str, app_id: str = "") -> Pr
     async def _send_file(target: str, file_bytes: bytes, filename: str, target_type: str) -> None:
         await api.async_send_file_message(receive_id=target, file_bytes=file_bytes, file_name=filename, receive_id_type=target_type or DEFAULT_FEISHU_TARGET_TYPE)
 
-    async def _send_card(target: str, card: dict[str, Any], target_type: str) -> None:
-        await api.async_send_card_message(receive_id=target, card=card, receive_id_type=target_type or DEFAULT_FEISHU_TARGET_TYPE)
-
     return ProviderRuntime(
         key=PROVIDER_FEISHU,
         title=PROVIDER_FEISHU,
@@ -357,7 +324,6 @@ def _runtime_factory(ws, api, tracker, subentry_id: str, app_id: str = "") -> Pr
         send_image=_send_image,
         send_video=_send_video,
         send_file=_send_file,
-        send_card=_send_card,
     )
 
 
@@ -369,8 +335,6 @@ def _build_schema(current: dict[str, Any]) -> vol.Schema:
         {
             vol.Required(CONF_FEISHU_APP_ID, default=current.get(CONF_FEISHU_APP_ID, "")): str,
             vol.Required(CONF_FEISHU_APP_SECRET, default=current.get(CONF_FEISHU_APP_SECRET, "")): str,
-            vol.Optional(CONF_FEISHU_VERIFICATION_TOKEN, default=current.get(CONF_FEISHU_VERIFICATION_TOKEN, "")): str,
-            vol.Optional(CONF_FEISHU_ENCRYPT_KEY, default=current.get(CONF_FEISHU_ENCRYPT_KEY, "")): str,
             vol.Optional(_CONF_FEISHU_SHOW_LIVE_PROGRESS, default=current.get(_CONF_FEISHU_SHOW_LIVE_PROGRESS, False)): bool,
         }
     )

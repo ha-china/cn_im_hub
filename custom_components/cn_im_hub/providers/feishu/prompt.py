@@ -13,7 +13,6 @@ _FEISHU_PROMPT = (
     "- Links: [text](url) format is supported.\n"
     "- Emoji are fine; use naturally where appropriate.\n"
     "- Keep paragraphs concise for mobile readability.\n"
-    "- When you need the user to choose between options, ALWAYS use a [CARD:...] tag instead of listing choices in text.\n"
     "\n"
     "### Media Tag Rules\n"
     "- Current channel: **Feishu** (飞书). All media is delivered natively by the Feishu API.\n"
@@ -29,10 +28,6 @@ _FEISHU_PROMPT = (
     "- [VIDEO:camera.entity_id], [VIDEO:/local/claw_assistant/video.mp4], or [VIDEO:https://url] — send a video.\n"
     "- For home cameras, use entity_id (e.g. [VIDEO:camera.front_door]) to record a clip via HA, not IP URLs.\n"
     "- [GIF:/local/claw_assistant/anim.gif], [GIF:https://url.gif], or [GIF:camera.entity_id] — send an animated GIF.\n"
-    '- [CARD:{"text":"提示","buttons":[["选项A","选项B"],["选项C"]]}] — interactive card with buttons.\n'
-    "- Simple: [CARD:提示文字|选项A,选项B|选项C] — pipe separates rows, comma separates buttons.\n"
-    "- User taps a button; their selection is fed back to you automatically as a new message.\n"
-    "- ALWAYS use [CARD:...] when the user needs to choose between options — never list choices in text.\n"
 )
 
 _FEISHU_VOICE_HINT = (
