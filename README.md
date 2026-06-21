@@ -43,8 +43,6 @@ Aggregate common Chinese IM platforms into one Home Assistant integration.
   Feishu auto-card reply: responses are automatically sent as interactive cards when they are long or contain structured content (lists, headings, etc.).
 - 飞书卡片 + 摄像头截图：`send_message` 同时传入 `card_json` 和 `camera_entity` 时，自动抓拍并嵌入卡片  
   Feishu card + camera snapshot: when `card_json` and `camera_entity` are both provided, the camera snapshot is automatically captured and injected into the card.
-- 飞书卡片回调：集成注册了 `/api/cn_im_hub/feishu/card_callback` 端点，接收卡片按钮交互事件  
-  Feishu card callback: the integration registers `/api/cn_im_hub/feishu/card_callback` to receive card button interaction events.
 
 ## 安装 / Installation
 
