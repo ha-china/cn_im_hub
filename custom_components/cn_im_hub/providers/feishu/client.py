@@ -32,7 +32,7 @@ from ...media.rich_media import (
 from .prompt import build_feishu_prompt
 from ...models import ProviderRuntime
 from ..base import ProviderSpec
-from .api import FeishuApiClient, async_inject_camera_snapshot
+from .api import FeishuApiClient
 from .ws import FeishuWsClient
 
 _LOGGER = logging.getLogger(__name__)

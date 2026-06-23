@@ -194,21 +194,6 @@ class FeishuApiClient:
         data = await async_read_json(response)
         if response.status != 200 or data.get("code") != 0:
             raise RuntimeError(f"update text failed: {data.get('msg', response.reason)}")
-async def async_inject_camera_snapshot(hass: HomeAssistant, card: dict[str, Any], image_data: bytes, ws_client: Any) -> bool:
-    app_id = getattr(ws_client, "_app_id", "")
-    app_secret = getattr(ws_client, "_app_secret", "")
-    if not app_id or not app_secret:
-        return False
-    image_key = await FeishuApiClient(hass, app_id, app_secret).async_upload_image(image_data)
-    if not image_key:
-        return False
-    elements = card.get("elements", [])
-    elements.insert(
-        next((i for i, e in enumerate(elements) if e.get("tag") == "hr"), 0),
-        {"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": "摄像头截图"}},
-    )
-    card["elements"] = elements
-    return True
 
 
 async def async_read_json(response: aiohttp.ClientResponse) -> dict[str, Any]:
