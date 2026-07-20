@@ -50,6 +50,8 @@ from .auth import (
     async_download_weixin_media,
     async_get_typing_ticket,
     async_get_updates,
+    async_notify_start,
+    async_notify_stop,
     async_send_typing,
     async_send_weixin_file,
     async_send_weixin_image,
@@ -269,6 +271,7 @@ class WeixinClient:
         self._stopping = False
         if self._task is None:
             self._task = asyncio.create_task(self._run())
+        await self._notify_start()
 
     async def stop(self) -> None:
         self._stopping = True
@@ -278,6 +281,19 @@ class WeixinClient:
                 await self._task
             self._task = None
         self._status = "disconnected"
+        await self._notify_stop()
+
+    async def _notify_start(self) -> None:
+        try:
+            await async_notify_start(self._hass, base_url=self._base_url, token=self._token)
+        except Exception as err:
+            _LOGGER.debug("Weixin notifyStart failed (ignored) account=%s: %s", self._account_id, err)
+
+    async def _notify_stop(self) -> None:
+        try:
+            await async_notify_stop(self._hass, base_url=self._base_url, token=self._token)
+        except Exception as err:
+            _LOGGER.debug("Weixin notifyStop failed (ignored) account=%s: %s", self._account_id, err)
 
     async def send_text(self, target: str, text: str, _: str) -> None:
         target = target.strip()

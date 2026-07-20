@@ -14,7 +14,7 @@ from ...provider_flow import _load_channel_titles
 from .auth import async_start_weixin_login, async_wait_weixin_login
 
 _LOGGER = logging.getLogger(__name__)
-_ACCOUNT_INDEX_STORE_VERSION = 1
+_ACCOUNT_INDEX_STORE_VERSION = 2
 _ACCOUNT_INDEX_STORE_KEY = "cn_im_hub_wechat_accounts"
 _CONF_WECHAT_SHOW_LIVE_PROGRESS = "wechat_show_live_progress"
 
@@ -61,6 +61,9 @@ class WeixinProviderSubentryFlow(ConfigSubentryFlow):
                 errors={"base": "auth_not_confirmed"},
                 description_placeholders=placeholders,
             )
+
+        if result.already_connected:
+            return self.async_abort(reason="already_connected", description_placeholders={"message": result.message})
 
         data = {
             CONF_WECHAT_TOKEN: result.token,
@@ -118,10 +121,30 @@ class WeixinProviderSubentryFlow(ConfigSubentryFlow):
         result = await async_start_weixin_login(
             self.hass,
             base_url=str(self._current.get(CONF_WECHAT_BASE_URL, WECHAT_DEFAULT_BASE_URL)),
+            local_token_list=await self._async_load_local_token_list(),
         )
         self._current["wechat_login_session"] = result
         self._current["wechat_qr_url"] = result.qrcode_url
         self._current["wechat_qr_data_url"] = result.qrcode_data_url
+
+    async def _async_load_local_token_list(self) -> list[str]:
+        """Return up to 10 most-recent bot tokens from the account index.
+
+        Mirrors openclaw-weixin 2.3.1+ getLocalBotTokenList: lets the server
+        recognize an already-bound bot during QR scan and short-circuit with
+        ``binded_redirect`` instead of issuing new credentials.
+        """
+        store: Store[dict[str, dict[str, str]]] = Store(
+            self.hass,
+            _ACCOUNT_INDEX_STORE_VERSION,
+            _ACCOUNT_INDEX_STORE_KEY,
+        )
+        current = await store.async_load() or {}
+        return [
+            token
+            for value in current.values()
+            if (token := str(value.get(CONF_WECHAT_TOKEN, "")).strip())
+        ][-10:]
 
     async def _async_update_account_index(self, data: dict[str, str]) -> None:
         store: Store[dict[str, dict[str, str]]] = Store(
@@ -139,6 +162,7 @@ class WeixinProviderSubentryFlow(ConfigSubentryFlow):
         if account_id:
             current[account_id] = {
                 CONF_WECHAT_USER_ID: user_id,
+                CONF_WECHAT_TOKEN: str(data.get(CONF_WECHAT_TOKEN, "")),
                 CONF_WECHAT_BASE_URL: str(data.get(CONF_WECHAT_BASE_URL, WECHAT_DEFAULT_BASE_URL)),
             }
         await store.async_save(current)

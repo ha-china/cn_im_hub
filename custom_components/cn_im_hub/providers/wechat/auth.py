@@ -48,6 +48,7 @@ class WeixinLoginResult:
     account_id: str = ""
     base_url: str = ""
     user_id: str = ""
+    already_connected: bool = False
 
 
 def _random_wechat_uin() -> str:
@@ -90,16 +91,42 @@ async def _api_post(
     return data
 
 
+def _check_send_message_resp(resp: dict[str, Any]) -> None:
+    """Validate SendMessage response, raise on non-zero ret.
+
+    Mirrors openclaw-weixin 2.4.5: previously the response body was discarded
+    and a non-zero ``ret`` (rate-limit, stale context_token, risk control, ...)
+    caused the failure to be silently dropped.
+    """
+    ret = resp.get("ret")
+    if isinstance(ret, int) and ret != 0:
+        errmsg = resp.get("errmsg")
+        raise RuntimeError(f"sendMessage ret={ret} errmsg={errmsg or '(none)'}")
+
+
 async def async_start_weixin_login(
     hass: HomeAssistant,
     *,
     base_url: str = WECHAT_DEFAULT_BASE_URL,
     session_key: str | None = None,
+    local_token_list: list[str],
 ) -> WeixinLoginSession:
+    """Request a login QR code.
+
+    Mirrors openclaw-weixin 2.3.1+ fetchQRCode: POST with ``local_token_list``
+    of recently-bound bot tokens (max 10, newest first) so the server can
+    recognize an already-bound bot and short-circuit with ``binded_redirect``
+    in ``async_wait_weixin_login``.
+    """
     session = async_get_clientsession(hass)
     url = f"{base_url.rstrip('/')}/ilink/bot/get_bot_qrcode?bot_type={_DEFAULT_ILINK_BOT_TYPE}"
+    payload = {
+        "local_token_list": list(local_token_list)[:10],
+        "base_info": {"channel_version": "ha-cn-im-hub"},
+    }
+    body = json.dumps(payload, ensure_ascii=False)
     timeout = aiohttp.ClientTimeout(total=_DEFAULT_API_TIMEOUT_MS / 1000)
-    async with session.get(url, timeout=timeout) as resp:
+    async with session.post(url, data=body.encode("utf-8"), headers=_build_headers(body), timeout=timeout) as resp:
         raw = await resp.text()
         if resp.status >= 400:
             raise RuntimeError(f"get_bot_qrcode {resp.status}: {raw}")
@@ -152,6 +179,12 @@ async def async_wait_weixin_login(
                 base_url=resolved_base_url,
                 user_id=user_id,
             )
+        if status == "binded_redirect":
+            return WeixinLoginResult(
+                connected=False,
+                already_connected=True,
+                message="已连接过此 OpenClaw，无需重复连接。",
+            )
         if status == "expired":
             raise ValueError("wechat login QR expired")
         await asyncio.sleep(2)
@@ -191,7 +224,7 @@ async def async_send_weixin_text(
 ) -> str:
     session = async_get_clientsession(hass)
     client_id = f"cn_im_hub_{uuid4().hex}"
-    await _api_post(
+    resp = await _api_post(
         session,
         base_url=base_url,
         endpoint="ilink/bot/sendmessage",
@@ -209,6 +242,7 @@ async def async_send_weixin_text(
         },
         token=token,
     )
+    _check_send_message_resp(resp)
     return client_id
 
 
@@ -361,7 +395,7 @@ async def _async_send_message_with_item(
     item: dict[str, Any],
 ) -> str:
     client_id = f"cn_im_hub_{uuid4().hex}"
-    await _api_post(
+    resp = await _api_post(
         session,
         base_url=base_url,
         endpoint="ilink/bot/sendmessage",
@@ -379,6 +413,7 @@ async def _async_send_message_with_item(
         },
         token=token,
     )
+    _check_send_message_resp(resp)
     return client_id
 
 
@@ -590,6 +625,48 @@ async def async_send_typing(
             "status": status,
             "base_info": {"channel_version": "ha-cn-im-hub"},
         },
+        token=token,
+    )
+
+
+async def async_notify_start(
+    hass: HomeAssistant,
+    *,
+    base_url: str,
+    token: str,
+) -> None:
+    """Notify Weixin server that this account is starting.
+
+    Mirrors openclaw-weixin 2.1.10+ notifyStart. Used for server-side online
+    state reconciliation. Failures are logged and ignored by the caller.
+    """
+    session = async_get_clientsession(hass)
+    await _api_post(
+        session,
+        base_url=base_url,
+        endpoint="ilink/bot/msg/notifystart",
+        payload={"base_info": {"channel_version": "ha-cn-im-hub"}},
+        token=token,
+    )
+
+
+async def async_notify_stop(
+    hass: HomeAssistant,
+    *,
+    base_url: str,
+    token: str,
+) -> None:
+    """Notify Weixin server that this account is stopping.
+
+    Mirrors openclaw-weixin 2.1.10+ notifyStop. Uses its own request so it
+    can complete after the long-poll loop has already been cancelled.
+    """
+    session = async_get_clientsession(hass)
+    await _api_post(
+        session,
+        base_url=base_url,
+        endpoint="ilink/bot/msg/notifystop",
+        payload={"base_info": {"channel_version": "ha-cn-im-hub"}},
         token=token,
     )
 
