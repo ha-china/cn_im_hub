@@ -50,31 +50,12 @@ jobs:
 
       - name: Generate release notes from commit history
         id: notes
-        run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
-          if [ -n "$PREV_TAG" ]; then
-            RANGE="$PREV_TAG..HEAD"
-            COMPARE_URL="https://github.com/${{ github.repository }}/compare/$PREV_TAG...${{ steps.version.outputs.tag }}"
-          else
-            RANGE="HEAD"
-            COMPARE_URL="https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}"
-          fi
-
-          COMMITS=$(git log --no-merges --pretty='- %h %s' $RANGE)
-          if [ -z "$COMMITS" ]; then
-            COMMITS='- No commits found in this release range.'
-          fi
-
-          {
-            echo 'body<<EOF'
-            echo "## Changes"
-            echo
-            echo "$COMMITS"
-            echo
-            echo "## Compare"
-            echo "$COMPARE_URL"
-            echo EOF
-          } >> "$GITHUB_OUTPUT"
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: Desmond-Dong/actions/bilingual-changelog@main
+        with:
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
+          llm-api-url: ${{ secrets.LLM_API_URL }}
+          llm-model: ${{ secrets.LLM_MODEL }}
 
       - name: Build HACS release archive
         if: steps.tag_check.outputs.exists == 'false'
@@ -88,6 +69,6 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
-          body: ${{ steps.notes.outputs.body }}
+          body: ${{ steps.notes.outputs.changelog }}
           files: cn_im_hub.zip
           make_latest: true
