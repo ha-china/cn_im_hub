@@ -73,13 +73,12 @@ class WeixinProviderSubentryFlow(ConfigSubentryFlow):
         }
         await self._async_update_account_index(data)
         return self.async_create_entry(
-            title=self._build_entry_title(self.hass.config.language),
+            title=await self._build_entry_title(self.hass.config.language),
             data=data,
         )
 
-    @staticmethod
-    def _build_entry_title(language: str) -> str:
-        titles = _load_channel_titles(language)
+    async def _build_entry_title(self, language: str) -> str:
+        titles = await _load_channel_titles(self.hass, language)
         return titles.get(PROVIDER_WECHAT, PROVIDER_WECHAT)
 
     async def async_step_reconfigure(

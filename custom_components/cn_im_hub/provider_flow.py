@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from homeassistant.config_entries import ConfigSubentryFlow, SubentryFlowResult
+from homeassistant.core import HomeAssistant
 
 from .providers.base import ProviderSpec
 
@@ -25,21 +26,25 @@ _TITLE_CACHE: dict[str, dict[str, str]] = {}
 _MAX_INSTANCES_PER_PROVIDER = 3
 
 
-def _load_channel_titles(lang: str) -> dict[str, str]:
-    if lang in _TITLE_CACHE:
-        return _TITLE_CACHE[lang]
+def _read_channel_titles_blocking(lang: str) -> dict[str, str]:
     for candidate in (lang, "en"):
         path = _TRANSLATIONS_DIR / f"{candidate}.json"
         if path.is_file():
             data = json.loads(path.read_text(encoding="utf-8"))
-            titles = {k: v.get("channel_title", k) for k, v in data.get("config_subentries", {}).items()}
-            _TITLE_CACHE[lang] = titles
-            return titles
+            return {k: v.get("channel_title", k) for k, v in data.get("config_subentries", {}).items()}
     return {}
 
 
-def _next_title(flow: ConfigSubentryFlow, spec: ProviderSpec) -> str:
-    titles = _load_channel_titles(flow.hass.config.language)
+async def _load_channel_titles(hass: HomeAssistant, lang: str) -> dict[str, str]:
+    if lang in _TITLE_CACHE:
+        return _TITLE_CACHE[lang]
+    titles = await hass.async_add_executor_job(_read_channel_titles_blocking, lang)
+    _TITLE_CACHE[lang] = titles
+    return titles
+
+
+async def _next_title(flow: ConfigSubentryFlow, spec: ProviderSpec) -> str:
+    titles = await _load_channel_titles(flow.hass, flow.hass.config.language)
     base = titles.get(spec.key, spec.key)
     n = _existing_count(flow, spec)
     return base if n == 0 else f"{base} #{n + 1}"
@@ -52,7 +57,7 @@ def _current_data(flow: ConfigSubentryFlow) -> dict[str, Any]:
 async def _complete(flow: ConfigSubentryFlow, spec: ProviderSpec, data: dict[str, Any]) -> SubentryFlowResult:
     entry = flow._get_entry()
     if flow.source == "user":
-        result = flow.async_create_entry(title=_next_title(flow, spec), data=data)
+        result = flow.async_create_entry(title=await _next_title(flow, spec), data=data)
     else:
         result = flow.async_update_and_abort(entry, flow._get_reconfigure_subentry(), data=data)
     
