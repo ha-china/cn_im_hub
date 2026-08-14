@@ -7,7 +7,7 @@ Feishu
 - URL: https://open.feishu.cn/
 - npm: https://www.npmjs.com/package/@larksuiteoapi/feishu-openclaw-plugin
 - npm latest: 2026.3.8
-- Last checked: 2026-07-20
+- Last checked: 2026-08-14
 
 WeCom
 - Source: WeCom Open Platform
@@ -19,7 +19,7 @@ WeCom
 - npm: https://www.npmjs.com/package/@wecom/wecom-openclaw-cli
 - npm latest (cli): 1.1.0
 - Notes: Official plugin supports Bot mode, Agent mode, interactive onboarding, multi-account routing, Agent/Bot webhook entrypoints, and Bot WebSocket to Agent HTTP fallback. As of 2026-07-02 the npm `latest` dist-tag was accidentally repointed to a malformed version `20206.7.201` (extra `2`); use `2026.7.2` instead. A beta `2026.7.2-beta.1` is also available.
-- Last checked: 2026-07-20
+- Last checked: 2026-08-14
 
 QQ
 - Source: Hello Claw / OpenClaw QQ bot flow
@@ -32,8 +32,8 @@ DingTalk
 - Source: DingTalk OpenClaw access docs
 - URL: https://open.dingtalk.com/document/dingstart/build-dingtalk-ai-employees
 - npm: https://www.npmjs.com/package/@dingtalk-real-ai/dingtalk-connector
-- npm latest: 0.8.23
-- Last checked: 2026-07-20
+- npm latest: 0.8.24
+- Last checked: 2026-08-14
 
 WeChat
 - Source package: @tencent-weixin/openclaw-weixin
@@ -44,7 +44,7 @@ WeChat
 - npm latest (cli): 2.1.4
 - Local reference: .tmp_cli_ref/weixin-plugin-2.0.1/package/ and .tmp_cli_ref/package/
 - Notes: Weixin 2.x is documented as active for OpenClaw >= 2026.3.22; current npm latest is 2.4.6, CLI latest is 2.1.4, and image upload response may return upload_full_url instead of upload_param.
-- Last checked: 2026-07-20
+- Last checked: 2026-08-14
 
 XiaoYi
 - Source package: @ynhcj/xiaoyi
