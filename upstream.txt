@@ -7,33 +7,34 @@ Feishu
 - URL: https://open.feishu.cn/
 - npm: https://www.npmjs.com/package/@larksuiteoapi/feishu-openclaw-plugin
 - npm latest: 2026.3.8
-- Last checked: 2026-08-14
+- Last checked: 2026-08-24
 
 WeCom
 - Source: WeCom Open Platform
 - URL: https://developer.work.weixin.qq.com/
 - Source package: @wecom/wecom-openclaw-plugin
 - npm: https://www.npmjs.com/package/@wecom/wecom-openclaw-plugin
-- npm latest: 2026.7.2
+- npm latest: 2026.8.17
 - Source package: @wecom/wecom-openclaw-cli
 - npm: https://www.npmjs.com/package/@wecom/wecom-openclaw-cli
-- npm latest (cli): 1.1.0
-- Notes: Official plugin supports Bot mode, Agent mode, interactive onboarding, multi-account routing, Agent/Bot webhook entrypoints, and Bot WebSocket to Agent HTTP fallback. As of 2026-07-02 the npm `latest` dist-tag was accidentally repointed to a malformed version `20206.7.201` (extra `2`); use `2026.7.2` instead. A beta `2026.7.2-beta.1` is also available.
-- Last checked: 2026-08-14
+- npm latest (cli): 1.1.1
+- Notes: Official plugin supports Bot mode, Agent mode, interactive onboarding, multi-account routing, Agent/Bot webhook entrypoints, and Bot WebSocket to Agent HTTP fallback. The 2026-07-02 malformed `latest` tag (`20206.7.201`) has since been replaced by normal versions; current latest is 2026.8.17. Since 2026.8.17 the plugin replaced the `wecom_mcp` tool with a `wecom-cli` tool and rewritten `wecomcli-*` skills; core aibot WebSocket protocol commands are unchanged.
+- Last checked: 2026-08-24
 
 QQ
 - Source: Hello Claw / OpenClaw QQ bot flow
 - URL: https://datawhalechina.github.io/hello-claw/cn/adopt/chapter3/
 - npm: https://www.npmjs.com/package/@sliverp/qqbot
 - npm latest: 1.6.1
-- Last checked: 2026-07-20
+- Last checked: 2026-08-24
 
 DingTalk
 - Source: DingTalk OpenClaw access docs
 - URL: https://open.dingtalk.com/document/dingstart/build-dingtalk-ai-employees
 - npm: https://www.npmjs.com/package/@dingtalk-real-ai/dingtalk-connector
-- npm latest: 0.8.24
-- Last checked: 2026-08-14
+- npm latest: 0.8.25
+- Notes: 0.8.25 improves AI Card lifecycle reliability (wait for in-flight card creation on close, seal streaming before idle/error close, 10-minute watchdog for upstream hangs, single-flight finalization). OpenClaw plugin SDK infra only — not relevant to our Python integration.
+- Last checked: 2026-08-24
 
 WeChat
 - Source package: @tencent-weixin/openclaw-weixin
@@ -44,7 +45,7 @@ WeChat
 - npm latest (cli): 2.1.4
 - Local reference: .tmp_cli_ref/weixin-plugin-2.0.1/package/ and .tmp_cli_ref/package/
 - Notes: Weixin 2.x is documented as active for OpenClaw >= 2026.3.22; current npm latest is 2.4.6, CLI latest is 2.1.4, and image upload response may return upload_full_url instead of upload_param.
-- Last checked: 2026-08-14
+- Last checked: 2026-08-24
 
 XiaoYi
 - Source package: @ynhcj/xiaoyi
@@ -54,4 +55,4 @@ XiaoYi
   - https://developer.huawei.com/consumer/cn/doc/service/open-claw-base-0000002518704040
   - https://developer.huawei.com/consumer/cn/doc/service/quick-start-0000002469548009
   - https://developer.huawei.com/consumer/cn/doc/service/openclaw-0000002518410344
-- Last checked: 2026-07-20
+- Last checked: 2026-08-24
