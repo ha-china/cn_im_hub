@@ -18,6 +18,23 @@ _ACCOUNT_INDEX_STORE_VERSION = 2
 _ACCOUNT_INDEX_STORE_KEY = "cn_im_hub_wechat_accounts"
 _CONF_WECHAT_SHOW_LIVE_PROGRESS = "wechat_show_live_progress"
 
+class _WeixinAccountIndexStore(Store[dict[str, dict[str, str]]]):
+    """Store for the Weixin account index."""
+
+    async def _async_migrate_func(
+        self,
+        old_major_version: int,
+        old_minor_version: int,
+        old_data: dict[str, dict[str, str]],
+    ) -> dict[str, dict[str, str]]:
+        """Migrate old account index data."""
+        if old_major_version == 1:
+            return old_data
+
+        raise ValueError(
+            f"Unsupported storage version: "
+            f"{old_major_version}.{old_minor_version}"
+        )
 
 class WeixinProviderSubentryFlow(ConfigSubentryFlow):
     """QR login based setup flow for Weixin channel."""
@@ -133,7 +150,7 @@ class WeixinProviderSubentryFlow(ConfigSubentryFlow):
         recognize an already-bound bot during QR scan and short-circuit with
         ``binded_redirect`` instead of issuing new credentials.
         """
-        store: Store[dict[str, dict[str, str]]] = Store(
+        store = _WeixinAccountIndexStore(
             self.hass,
             _ACCOUNT_INDEX_STORE_VERSION,
             _ACCOUNT_INDEX_STORE_KEY,
@@ -146,7 +163,7 @@ class WeixinProviderSubentryFlow(ConfigSubentryFlow):
         ][-10:]
 
     async def _async_update_account_index(self, data: dict[str, str]) -> None:
-        store: Store[dict[str, dict[str, str]]] = Store(
+        store = _WeixinAccountIndexStore(
             self.hass,
             _ACCOUNT_INDEX_STORE_VERSION,
             _ACCOUNT_INDEX_STORE_KEY,
