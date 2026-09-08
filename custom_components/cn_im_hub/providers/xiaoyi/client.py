@@ -90,6 +90,7 @@ class XiaoYiClient:
         self._session_servers: dict[str, str] = {}
         self._seen_task_ids: dict[str, None] = {}
         self._request_ids: dict[str, str] = {}  # task_id -> request id (message.id)
+        self._prompt_sessions: dict[str, str] = {}  # task_id -> session_id
         self._stopping = False
         self._tracker = None
         self._show_live_progress = show_live_progress
@@ -329,11 +330,10 @@ class XiaoYiClient:
         if method == "clearContext" or action == "clear":
             if session_id:
                 await self._send_clear_context_response(str(message.get("id") or uuid4()), session_id)
-                # Clean up session state
+                # Clean up session state and cancel any active prompt in it
                 self._session_servers.pop(session_id, None)
-                # Cancel any active prompt for this session
                 for task_id, task in list(self._active_prompts.items()):
-                    if self._request_ids.get(task_id) == session_id:
+                    if self._prompt_sessions.get(task_id) == session_id:
                         task.cancel()
             return
         if method == "tasks/cancel" or action == "tasks/cancel":
@@ -358,6 +358,7 @@ class XiaoYiClient:
         # Capture the request id (message.id) for responses
         request_id = str(message.get("id") or "")
         self._request_ids[task_id] = request_id
+        self._prompt_sessions[task_id] = session_id
 
         if self._tracker is not None:
             await self._tracker.async_record(
@@ -368,7 +369,13 @@ class XiaoYiClient:
             )
         task = asyncio.create_task(self._process_prompt(task_id, session_id, text))
         self._active_prompts[task_id] = task
-        task.add_done_callback(lambda _: self._active_prompts.pop(task_id, None))
+
+        def _cleanup(task_id: str = task_id) -> None:
+            self._active_prompts.pop(task_id, None)
+            self._request_ids.pop(task_id, None)
+            self._prompt_sessions.pop(task_id, None)
+
+        task.add_done_callback(_cleanup)
 
     def _format_live_progress(self, payload: dict[str, Any]) -> str:
         display_text = str(payload.get("display_text") or "").strip()

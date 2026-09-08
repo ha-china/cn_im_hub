@@ -613,6 +613,7 @@ class QQClient:
         forced_delay = 0.0
         while True:
             self._status = "connecting"
+            close_code: int | None = None
             try:
                 token = await self._get_token()
                 gateway = await self._get_gateway(token)
@@ -640,13 +641,21 @@ class QQClient:
                 )
             finally:
                 self._stop_heartbeat()
-                close_code = self._ws.close_code if self._ws is not None else None
-                if self._ws and not self._ws.closed:
-                    await self._ws.close()
+                if self._ws is not None:
+                    close_code = self._ws.close_code
+                    if not self._ws.closed:
+                        await self._ws.close()
                 self._ws = None
-                forced_delay = self._apply_close_code(close_code)
-                if self._status not in ("error",):
+                if self._status != "error":
                     self._status = "disconnected"
+            # Deliberately outside finally: _apply_close_code can raise the
+            # fatal-close error, which must not escape a finally block.
+            try:
+                forced_delay = self._apply_close_code(close_code)
+            except _QQFatalCloseError as err:
+                _LOGGER.error("%s", err)
+                self._status = "error"
+                return
             await asyncio.sleep(forced_delay if forced_delay > 0 else self._retry_delay(consecutive_failures))
 
     def _apply_close_code(self, code: int | None) -> float:
