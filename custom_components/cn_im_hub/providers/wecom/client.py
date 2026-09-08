@@ -228,6 +228,10 @@ class WeComWsClient:
         try:
             await self._ws.send_json(payload)
             frame = await asyncio.wait_for(future, timeout=15)
+        except asyncio.TimeoutError as err:
+            raise RuntimeError(
+                f"wecom {payload.get('cmd')} timed out waiting for ack (req_id={req_id}) — the websocket connection is likely unstable"
+            ) from err
         finally:
             self._pending.pop(req_id, None)
         if isinstance(frame.get("errcode"), int) and frame["errcode"] != 0:
@@ -369,6 +373,11 @@ class WeComWsClient:
                             self._inbound_tasks.add(task)
                             task.add_done_callback(self._inbound_tasks.discard)
                     elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED):
+                        _LOGGER.warning(
+                            "WeCom websocket closed by server (code=%s reason=%s)",
+                            self._ws.close_code if self._ws else None,
+                            self._ws.close_reason if self._ws else None,
+                        )
                         break
             except asyncio.CancelledError:
                 raise
@@ -387,9 +396,10 @@ class WeComWsClient:
                 auth_failure = False
                 delay = self._retry_delay(consecutive_failures)
                 _LOGGER.warning(
-                    "WeCom websocket error (attempt %d, retry in %ds): %s",
+                    "WeCom websocket error (attempt %d, retry in %ds): %s: %s",
                     consecutive_failures,
                     delay,
+                    type(err).__name__,
                     err,
                 )
             finally:

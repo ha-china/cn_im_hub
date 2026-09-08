@@ -170,7 +170,7 @@ class XiaoYiClient:
         headers = _build_auth_headers(self._ak, self._sk, self._xiaoyi_agent_id)
         ssl_context = _build_ws_ssl_context(url)
         if ssl_context is not True:
-            _LOGGER.info("XiaoYi %s uses insecure TLS fallback for IP endpoint", server_id)
+            _LOGGER.debug("XiaoYi %s uses insecure TLS fallback for IP endpoint", server_id)
 
         _LOGGER.info("Connecting XiaoYi %s: %s", server_id, url)
         try:
@@ -214,6 +214,15 @@ class XiaoYiClient:
         except Exception as err:
             _LOGGER.warning("XiaoYi websocket loop error (%s): %s", server_id, err)
         finally:
+            close_code = ws.close_code
+            close_reason = getattr(ws, "close_reason", None)
+            if not self._stopping:
+                _LOGGER.warning(
+                    "XiaoYi %s connection closed (code=%s reason=%s)",
+                    server_id,
+                    close_code,
+                    close_reason,
+                )
             await self._handle_disconnect(server_id)
 
     async def _handle_disconnect(self, server_id: str) -> None:
