@@ -291,7 +291,13 @@ class WeComWsClient:
         return min(_RECONNECT_BASE_DELAY_SECONDS * (2 ** min(attempt - 1, 6)), _RECONNECT_MAX_DELAY_SECONDS)
 
     async def _subscribe(self) -> None:
-        """Send the subscribe frame and validate the server ack."""
+        """Send the subscribe frame and validate the server ack if it comes.
+
+        The WeCom gateway does not reliably echo our req_id in the ack frame,
+        so a timeout here is NOT treated as an auth failure — the connection
+        stays up (this matches pre-validation behavior where message flow
+        worked). Only an explicit non-zero errcode counts as rejected.
+        """
         assert self._ws is not None and not self._ws.closed
         req_id = f"{CMD_SUBSCRIBE}_{uuid.uuid4().hex[:16]}"
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
@@ -304,7 +310,11 @@ class WeComWsClient:
                     "body": {"bot_id": self.bot_id, "secret": self.secret},
                 }
             )
-            frame = await asyncio.wait_for(future, timeout=_SUBSCRIBE_ACK_TIMEOUT_SECONDS)
+            try:
+                frame = await asyncio.wait_for(future, timeout=_SUBSCRIBE_ACK_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                _LOGGER.debug("WeCom subscribe ack not received within %ss; continuing", _SUBSCRIBE_ACK_TIMEOUT_SECONDS)
+                return
         finally:
             self._pending.pop(req_id, None)
         errcode = frame.get("errcode")
