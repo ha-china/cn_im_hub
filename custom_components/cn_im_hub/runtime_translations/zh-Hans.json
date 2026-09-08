@@ -1,0 +1,9 @@
+{
+  "wecom_welcome": "Home Assistant 已连接，你可以直接发送问题或控制指令。",
+  "wecom_command_timeout": "命令执行超时（6 分钟），请简化指令后重试。",
+  "wecom_command_failed": "执行失败：{error}",
+  "wechat_already_connected": "已连接过此机器人，无需重复扫码。",
+  "xiaoyi_task_empty_reply": "任务已结束，但没有产生输出，请重试。",
+  "xiaoyi_task_failed": "任务执行失败，请稍后重试。",
+  "dingtalk_command_timeout": "命令执行超时，请简化指令后重试。"
+}

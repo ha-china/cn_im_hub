@@ -1,8 +1,8 @@
 """Runtime translations for user-facing IM messages.
 
-HA's translation system covers config flows and services only. Messages we
-send *into* the IM channels (timeouts, welcome texts, fallback replies) need
-their own lookup: a `runtime` section in translations/{lang}.json with an
+HA's translation system (and hassfest validation) only covers config flows
+and services. Messages we send *into* the IM channels (timeouts, welcome
+texts, fallback replies) live in `runtime_translations/{lang}.json` with an
 English fallback baked in below.
 """
 
@@ -14,7 +14,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-_TRANSLATIONS_DIR = Path(__file__).parent / "translations"
+_TRANSLATIONS_DIR = Path(__file__).parent / "runtime_translations"
 _CACHE: dict[str, dict[str, str]] = {}
 
 _DEFAULTS: dict[str, str] = {

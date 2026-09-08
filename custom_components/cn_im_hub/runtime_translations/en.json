@@ -1,0 +1,9 @@
+{
+  "wecom_welcome": "Home Assistant is connected. Send me questions or control commands directly.",
+  "wecom_command_timeout": "Command timed out (6 minutes). Please simplify the command and try again.",
+  "wecom_command_failed": "Execution failed: {error}",
+  "wechat_already_connected": "This bot is already connected. No need to scan again.",
+  "xiaoyi_task_empty_reply": "Task finished without any output. Please try again.",
+  "xiaoyi_task_failed": "Task failed, please try again later.",
+  "dingtalk_command_timeout": "Command timed out. Please simplify the command and try again."
+}
