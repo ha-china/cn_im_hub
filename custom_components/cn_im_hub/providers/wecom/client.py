@@ -23,6 +23,7 @@ _LIVE_PROGRESS_SEND_INTERVAL_SECONDS = 2.0
 from ...core.command import execute_command, im_public_url_for_source, parse_command
 from ...const import CONF_WECOM_BOT_ID, CONF_WECOM_SECRET, PROVIDER_WECOM, WECOM_WS_URL
 from ...core.known_targets import async_get_tracker
+from ...i18n import async_get_runtime_strings, runtime_string
 from ...media.rich_media import (
     FileSegment,
     ImageSegment,
@@ -49,7 +50,22 @@ CMD_UPLOAD_MEDIA_INIT = "aibot_upload_media_init"
 CMD_UPLOAD_MEDIA_CHUNK = "aibot_upload_media_chunk"
 CMD_UPLOAD_MEDIA_FINISH = "aibot_upload_media_finish"
 EVENT_ENTER_CHAT = "enter_chat"
+CMD_DISCONNECT_EVENT = "disconnect_event"
 _UPLOAD_CHUNK_SIZE = 512 * 1024
+_APP_HEARTBEAT_INTERVAL_SECONDS = 30
+_SUBSCRIBE_ACK_TIMEOUT_SECONDS = 10
+_COMMAND_TIMEOUT_SECONDS = 360
+_REPLY_CHUNK_LIMIT = 4000
+_MEDIA_MAX_BYTES = 20 * 1024 * 1024
+_MEDIA_TYPE_LIMITS = {"image": 10 * 1024 * 1024, "video": 10 * 1024 * 1024, "voice": 2 * 1024 * 1024}
+_MAX_SEEN_MSGIDS = 512
+_RECONNECT_BASE_DELAY_SECONDS = 5
+_RECONNECT_MAX_DELAY_SECONDS = 300
+_AUTH_RETRY_DELAY_SECONDS = 60
+
+
+class WeComAuthError(RuntimeError):
+    """Raised when the server rejects the subscribe credentials."""
 
 
 class WeComWsClient:
@@ -60,10 +76,14 @@ class WeComWsClient:
         self._session = async_get_clientsession(hass)
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._runner_task: asyncio.Task[None] | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
+        self._inbound_tasks: set[asyncio.Task[None]] = set()
         self._running = False
+        self._kicked = False
         self._authenticated = False
         self._callback: Any = None
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._seen_msgids: dict[str, None] = {}
 
     @property
     def status(self) -> str:
@@ -88,6 +108,16 @@ class WeComWsClient:
             if not future.done():
                 future.cancel()
         self._pending.clear()
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._heartbeat_task
+            self._heartbeat_task = None
+        for task in list(self._inbound_tasks):
+            task.cancel()
+        if self._inbound_tasks:
+            await asyncio.gather(*self._inbound_tasks, return_exceptions=True)
+        self._inbound_tasks.clear()
         if self._runner_task:
             self._runner_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -98,15 +128,20 @@ class WeComWsClient:
         self._ws = None
         self._authenticated = False
 
+    @property
+    def kicked(self) -> bool:
+        return self._kicked
+
     async def send_markdown(self, target: str, message: str) -> None:
         if not self._ws or self._ws.closed:
             raise RuntimeError("websocket not connected")
-        payload = {
-            "cmd": CMD_SEND_MSG,
-            "headers": {"req_id": f"{CMD_SEND_MSG}_{uuid.uuid4().hex[:16]}"},
-            "body": {"chatid": target, "msgtype": "markdown", "markdown": {"content": message}},
-        }
-        await self._ws.send_json(payload)
+        for chunk in _chunk_text(message, _REPLY_CHUNK_LIMIT):
+            payload = {
+                "cmd": CMD_SEND_MSG,
+                "headers": {"req_id": f"{CMD_SEND_MSG}_{uuid.uuid4().hex[:16]}"},
+                "body": {"chatid": target, "msgtype": "markdown", "markdown": {"content": chunk}},
+            }
+            await self._send_with_reply(payload)
 
     async def send_text(self, target: str, message: str, mentioned_list: list[str] | None = None) -> None:
         if not self._ws or self._ws.closed:
@@ -144,57 +179,41 @@ class WeComWsClient:
     async def reply_via_response_url(self, response_url: str, message: str) -> None:
         payload = {"msgtype": "markdown", "markdown": {"content": message}}
         async with self._session.post(response_url, json=payload, timeout=15) as resp:
-            _ = await resp.text()
+            body = await resp.text()
+            if resp.status >= 400:
+                raise RuntimeError(f"response_url reply failed: {resp.status} {body[:200]}")
 
     async def send_image(self, target: str, image_bytes: bytes) -> None:
-        if not self._ws or self._ws.closed:
-            raise RuntimeError("websocket not connected")
-        if not image_bytes:
-            raise ValueError("wecom image data is empty")
-        media_id = await self._upload_media(image_bytes, media_type="image", filename="camera.jpg")
-        payload = {
-            "cmd": CMD_SEND_MSG,
-            "headers": {"req_id": f"{CMD_SEND_MSG}_{uuid.uuid4().hex[:16]}"},
-            "body": {"chatid": target, "msgtype": "image", "image": {"media_id": media_id}},
-        }
-        await self._send_with_reply(payload)
+        await self._send_media(target, image_bytes, media_type="image", filename="camera.jpg")
 
     async def send_video(self, target: str, video_bytes: bytes, filename: str = "video.mp4") -> None:
-        if not self._ws or self._ws.closed:
-            raise RuntimeError("websocket not connected")
-        if not video_bytes:
-            raise ValueError("wecom video data is empty")
-        media_id = await self._upload_media(video_bytes, media_type="video", filename=filename)
-        payload = {
-            "cmd": CMD_SEND_MSG,
-            "headers": {"req_id": f"{CMD_SEND_MSG}_{uuid.uuid4().hex[:16]}"},
-            "body": {"chatid": target, "msgtype": "video", "video": {"media_id": media_id}},
-        }
-        await self._send_with_reply(payload)
+        await self._send_media(target, video_bytes, media_type="video", filename=filename)
 
     async def send_file(self, target: str, file_bytes: bytes, filename: str = "file") -> None:
-        if not self._ws or self._ws.closed:
-            raise RuntimeError("websocket not connected")
-        if not file_bytes:
-            raise ValueError("wecom file data is empty")
-        media_id = await self._upload_media(file_bytes, media_type="file", filename=filename)
-        payload = {
-            "cmd": CMD_SEND_MSG,
-            "headers": {"req_id": f"{CMD_SEND_MSG}_{uuid.uuid4().hex[:16]}"},
-            "body": {"chatid": target, "msgtype": "file", "file": {"media_id": media_id}},
-        }
-        await self._send_with_reply(payload)
+        await self._send_media(target, file_bytes, media_type="file", filename=filename)
 
     async def send_voice(self, target: str, voice_bytes: bytes, filename: str = "voice.mp3") -> None:
+        await self._send_media(target, voice_bytes, media_type="voice", filename=filename)
+
+    async def _send_media(self, target: str, data: bytes, *, media_type: str, filename: str) -> None:
         if not self._ws or self._ws.closed:
             raise RuntimeError("websocket not connected")
-        if not voice_bytes:
-            raise ValueError("wecom voice data is empty")
-        media_id = await self._upload_media(voice_bytes, media_type="voice", filename=filename)
+        if not data:
+            raise ValueError("wecom media data is empty")
+        if len(data) > _MEDIA_MAX_BYTES:
+            raise ValueError(f"wecom media exceeds {_MEDIA_MAX_BYTES} bytes limit")
+        type_limit = _MEDIA_TYPE_LIMITS.get(media_type)
+        # WeCom voice only accepts AMR; oversize media downgrades to file (upstream behavior).
+        if media_type == "voice" and not filename.lower().endswith(".amr"):
+            media_type, filename = "file", _ensure_extension(filename, "mp3")
+        elif type_limit is not None and len(data) > type_limit:
+            _LOGGER.info("WeCom %s downgraded to file (%d bytes over %d limit)", media_type, len(data), type_limit)
+            media_type, filename = "file", _ensure_extension(filename, media_type)
+        media_id = await self._upload_media(data, media_type=media_type, filename=filename)
         payload = {
             "cmd": CMD_SEND_MSG,
             "headers": {"req_id": f"{CMD_SEND_MSG}_{uuid.uuid4().hex[:16]}"},
-            "body": {"chatid": target, "msgtype": "voice", "voice": {"media_id": media_id}},
+            "body": {"chatid": target, "msgtype": media_type, media_type: {"media_id": media_id}},
         }
         await self._send_with_reply(payload)
 
@@ -263,25 +282,82 @@ class WeComWsClient:
             raise ValueError("wecom upload finish missing media_id")
         return media_id
 
-    async def _run(self) -> None:
-        retry_count = 0
-        max_retries = 8
-        while self._running:
+    @staticmethod
+    def _retry_delay(attempt: int) -> int:
+        return min(_RECONNECT_BASE_DELAY_SECONDS * (2 ** min(attempt - 1, 6)), _RECONNECT_MAX_DELAY_SECONDS)
+
+    async def _subscribe(self) -> None:
+        """Send the subscribe frame and validate the server ack."""
+        assert self._ws is not None and not self._ws.closed
+        req_id = f"{CMD_SUBSCRIBE}_{uuid.uuid4().hex[:16]}"
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._pending[req_id] = future
+        try:
+            await self._ws.send_json(
+                {
+                    "cmd": CMD_SUBSCRIBE,
+                    "headers": {"req_id": req_id},
+                    "body": {"bot_id": self.bot_id, "secret": self.secret},
+                }
+            )
+            frame = await asyncio.wait_for(future, timeout=_SUBSCRIBE_ACK_TIMEOUT_SECONDS)
+        finally:
+            self._pending.pop(req_id, None)
+        errcode = frame.get("errcode")
+        if isinstance(errcode, int) and errcode != 0:
+            raise WeComAuthError(f"subscribe rejected: errcode={errcode} errmsg={frame.get('errmsg')}")
+
+    async def _heartbeat_loop(self) -> None:
+        """Send app-level ping frames so the gateway does not idle-kick us."""
+        while self._running and self._ws is not None and not self._ws.closed:
+            await asyncio.sleep(_APP_HEARTBEAT_INTERVAL_SECONDS)
             try:
-                self._ws = await self._session.ws_connect(WS_URL, heartbeat=60)
                 await self._ws.send_json(
                     {
-                        "cmd": CMD_SUBSCRIBE,
-                        "headers": {"req_id": f"{CMD_SUBSCRIBE}_{uuid.uuid4().hex[:16]}"},
-                        "body": {"bot_id": self.bot_id, "secret": self.secret},
+                        "cmd": CMD_HEARTBEAT,
+                        "headers": {"req_id": f"{CMD_HEARTBEAT}_{uuid.uuid4().hex[:16]}"},
+                        "body": {},
                     }
                 )
+            except Exception as err:
+                _LOGGER.debug("WeCom heartbeat send failed: %s", err)
+                break
+
+    def _is_kick_frame(self, frame: dict[str, Any]) -> bool:
+        cmd = str(frame.get("cmd") or "")
+        if cmd == CMD_DISCONNECT_EVENT:
+            return True
+        if cmd == CMD_EVENT_CALLBACK:
+            event_type = str(
+                (frame.get("body", {}).get("event") or {}).get("eventtype")
+                or frame.get("body", {}).get("eventtype")
+                or ""
+            )
+            return "disconnect" in event_type.lower()
+        return False
+
+    async def _run(self) -> None:
+        consecutive_failures = 0
+        auth_failure = False
+        while self._running and not self._kicked:
+            try:
+                self._ws = await self._session.ws_connect(WS_URL, heartbeat=60)
+                await self._subscribe()
                 self._authenticated = True
-                retry_count = 0
-                while self._running and self._ws and not self._ws.closed:
+                consecutive_failures = 0
+                auth_failure = False
+                self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+                while self._running and not self._kicked and self._ws and not self._ws.closed:
                     msg = await self._ws.receive()
                     if msg.type == aiohttp.WSMsgType.TEXT:
                         frame = json.loads(msg.data)
+                        if self._is_kick_frame(frame):
+                            self._kicked = True
+                            self._running = False
+                            _LOGGER.error(
+                                "WeCom server reported disconnect_event (bot kicked by another connection or disabled); stopping reconnects to avoid a kick loop"
+                            )
+                            break
                         req_id = str(frame.get("headers", {}).get("req_id") or "").strip()
                         if req_id and req_id in self._pending:
                             future = self._pending[req_id]
@@ -289,34 +365,88 @@ class WeComWsClient:
                                 future.set_result(frame)
                             continue
                         if self._callback:
-                            await self._callback(frame)
+                            task = asyncio.create_task(self._callback(frame))
+                            self._inbound_tasks.add(task)
+                            task.add_done_callback(self._inbound_tasks.discard)
                     elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED):
                         break
             except asyncio.CancelledError:
                 raise
+            except WeComAuthError as err:
+                consecutive_failures += 1
+                auth_failure = True
+                self._authenticated = False
+                _LOGGER.warning(
+                    "WeCom authentication failed (attempt %d, retry in %ds): %s",
+                    consecutive_failures,
+                    _AUTH_RETRY_DELAY_SECONDS,
+                    err,
+                )
             except Exception as err:
-                retry_count += 1
-                _LOGGER.warning("WeCom websocket error (attempt %d/%d): %s", retry_count, max_retries, err)
-                if retry_count >= max_retries:
-                    _LOGGER.error("WeCom connection failed after %d attempts, stopping", max_retries)
-                    self._running = False
-                    break
+                consecutive_failures += 1
+                auth_failure = False
+                delay = self._retry_delay(consecutive_failures)
+                _LOGGER.warning(
+                    "WeCom websocket error (attempt %d, retry in %ds): %s",
+                    consecutive_failures,
+                    delay,
+                    err,
+                )
             finally:
                 self._authenticated = False
+                if self._heartbeat_task:
+                    self._heartbeat_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await self._heartbeat_task
+                    self._heartbeat_task = None
                 if self._ws and not self._ws.closed:
                     await self._ws.close()
                 self._ws = None
-            if self._running:
-                await asyncio.sleep(5)
+            if self._running and not self._kicked:
+                await asyncio.sleep(_AUTH_RETRY_DELAY_SECONDS if auth_failure else self._retry_delay(consecutive_failures))
+        self._kicked = False
+
+
+def _chunk_text(text: str, limit: int) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    return [text[i : i + limit] for i in range(0, len(text), limit)]
+
+
+def _ensure_extension(filename: str, media_type: str) -> str:
+    if "." in filename:
+        return filename
+    return f"{filename}.{media_type}"
 
 
 def _extract_text(body: dict[str, Any]) -> str:
-    if body.get("msgtype") == "text":
-        return body.get("text", {}).get("content", "").strip()
-    if body.get("msgtype") == "voice":
-        content = str((body.get("voice") or {}).get("content") or "").strip()
-        return content
-    return str(body.get("content", "")).strip()
+    parts: list[str] = []
+    if body.get("msgtype") == "mixed":
+        for item in (body.get("mixed") or {}).get("msg_item") or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("msgtype") == "text":
+                content = str((item.get("text") or {}).get("content") or "").strip()
+                if content:
+                    parts.append(content)
+    else:
+        content = str((body.get("text") or {}).get("content") or "").strip()
+        if content:
+            parts.append(content)
+        if body.get("msgtype") == "voice":
+            voice_text = str((body.get("voice") or {}).get("content") or "").strip()
+            if voice_text:
+                parts.append(voice_text)
+    quote = body.get("quote")
+    if isinstance(quote, dict):
+        quoted = str(
+            (quote.get("text") or {}).get("content")
+            or (quote.get("voice") or {}).get("content")
+            or ""
+        ).strip()
+        if quoted:
+            parts.append(f"[引用消息] {quoted}")
+    return "\n".join(parts).strip()
 
 
 def _extract_reply_target(body: dict[str, Any]) -> str:
@@ -335,11 +465,24 @@ async def _resolve_media(hass: HomeAssistant, source: str) -> bytes | None:
     source = im_public_url_for_source(hass, source)
     if source.startswith(("http://", "https://")):
         session = async_get_clientsession(hass)
-        async with session.get(source) as resp:
-            if resp.status == 200:
-                return await resp.read()
+        async with session.get(source, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            if resp.status != 200:
+                return None
+            chunks: list[bytes] = []
+            received = 0
+            async for chunk in resp.content.iter_chunked(64 * 1024):
+                received += len(chunk)
+                if received > _MEDIA_MAX_BYTES:
+                    _LOGGER.warning("WeCom media download aborted: %s exceeds %d bytes", source, _MEDIA_MAX_BYTES)
+                    return None
+                chunks.append(chunk)
+            return b"".join(chunks)
     elif await hass.async_add_executor_job(os.path.isfile, source):
-        return await hass.async_add_executor_job(_read_file, source)
+        data = await hass.async_add_executor_job(_read_file, source)
+        if len(data) > _MEDIA_MAX_BYTES:
+            _LOGGER.warning("WeCom media file too large: %s (%d bytes)", source, len(data))
+            return None
+        return data
     return None
 
 
@@ -393,18 +536,25 @@ async def async_setup_provider(
     show_live_progress = bool(config.get(_CONF_WECOM_SHOW_LIVE_PROGRESS, False))
     client = WeComWsClient(hass, bot_id, secret)
     tracker = await async_get_tracker(hass, subentry_id)
+    strings = await async_get_runtime_strings(hass, hass.config.language)
 
     async def _reply_text(target: str, text: str, response_url: str, callback_req_id: str) -> None:
         if response_url:
-            with contextlib.suppress(Exception):
+            try:
                 await client.reply_via_response_url(response_url, text)
                 return
+            except Exception as err:
+                _LOGGER.warning("WeCom response_url reply failed: %s", err)
         if callback_req_id:
-            with contextlib.suppress(Exception):
+            try:
                 await client.reply_markdown(callback_req_id, text)
                 return
-        with contextlib.suppress(Exception):
+            except Exception as err:
+                _LOGGER.warning("WeCom passive reply failed: %s", err)
+        try:
             await client.send_markdown(target, text)
+        except Exception as err:
+            _LOGGER.warning("WeCom proactive reply failed: %s", err)
 
     async def _handle_inbound(frame: dict[str, Any]) -> None:
         cmd = frame.get("cmd")
@@ -413,12 +563,19 @@ async def async_setup_provider(
         callback_req_id = frame.get("headers", {}).get("req_id", "")
         body = frame.get("body", {})
         response_url = body.get("response_url", "")
+        msgid = str(body.get("msgid") or "").strip()
+        if msgid:
+            if msgid in client._seen_msgids:
+                return
+            client._seen_msgids[msgid] = None
+            if len(client._seen_msgids) > _MAX_SEEN_MSGIDS:
+                client._seen_msgids.pop(next(iter(client._seen_msgids)), None)
 
         if cmd == CMD_EVENT_CALLBACK:
             event_type = body.get("event", {}).get("eventtype") or body.get("eventtype")
             if event_type == EVENT_ENTER_CHAT and callback_req_id:
                 with contextlib.suppress(Exception):
-                    await client.reply_welcome(callback_req_id, "已连接 Home Assistant，你可以直接发送问题或控制指令。")
+                    await client.reply_welcome(callback_req_id, runtime_string(strings, "wecom_welcome"))
             return
 
         text = _extract_text(body)
@@ -482,16 +639,22 @@ async def async_setup_provider(
         progress_task = asyncio.create_task(_run_live_progress_bridge(conversation_id))
 
         try:
-            reply = await execute_command(
-                hass,
-                command,
-                conversation_id=conversation_id,
-                agent_id=agent_id,
-                extra_system_prompt=build_wecom_prompt(),
-                user_id=sender_name,
+            reply = await asyncio.wait_for(
+                execute_command(
+                    hass,
+                    command,
+                    conversation_id=conversation_id,
+                    agent_id=agent_id,
+                    extra_system_prompt=build_wecom_prompt(),
+                    user_id=sender_name,
+                ),
+                timeout=_COMMAND_TIMEOUT_SECONDS,
             )
+        except asyncio.TimeoutError:
+            reply = runtime_string(strings, "wecom_command_timeout")
+            _LOGGER.warning("WeCom command execution timed out after %ss", _COMMAND_TIMEOUT_SECONDS)
         except Exception as err:
-            reply = f"Execution failed: {type(err).__name__}"
+            reply = runtime_string(strings, "wecom_command_failed", error=type(err).__name__)
             _LOGGER.exception("WeCom command execution failed: %s", err)
         finally:
             progress_task.cancel()

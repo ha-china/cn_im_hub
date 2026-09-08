@@ -63,6 +63,8 @@ def _build_headers(body: str, token: str | None = None) -> dict[str, str]:
         "AuthorizationType": "ilink_bot_token",
         "Content-Length": str(len(body.encode("utf-8"))),
         "X-WECHAT-UIN": _random_wechat_uin(),
+        "iLink-App-Id": "bot",
+        "iLink-App-ClientVersion": "1",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -101,7 +103,10 @@ def _check_send_message_resp(resp: dict[str, Any]) -> None:
     ret = resp.get("ret")
     if isinstance(ret, int) and ret != 0:
         errmsg = resp.get("errmsg")
-        raise RuntimeError(f"sendMessage ret={ret} errmsg={errmsg or '(none)'}")
+        raise RuntimeError(
+            f"sendMessage ret={ret} errmsg={errmsg or '(none)'} "
+            "(if this keeps failing, the context_token has likely expired — have the user send a message to the bot first, then retry the push)"
+        )
 
 
 async def async_start_weixin_login(
@@ -183,8 +188,22 @@ async def async_wait_weixin_login(
             return WeixinLoginResult(
                 connected=False,
                 already_connected=True,
-                message="已连接过此 OpenClaw，无需重复连接。",
+                message="This bot is already connected. No need to scan again.",
             )
+        if status == "scaned_but_redirect":
+            # IDC redirect: switch polling host for better connectivity
+            redirect_host = str(data.get("redirect_host") or "").strip()
+            if redirect_host:
+                base_url = f"https://{redirect_host}"
+                _LOGGER.info("WeChat login IDC redirect to %s", base_url)
+            continue
+        if status == "need_verifycode":
+            # Server-side risk control requires verification code
+            _LOGGER.warning("WeChat login requires verification code — please check your phone")
+            continue
+        if status == "verify_code_blocked":
+            _LOGGER.warning("WeChat login verification code blocked — please try again later")
+            continue
         if status == "expired":
             raise ValueError("wechat login QR expired")
         await asyncio.sleep(2)
@@ -224,20 +243,22 @@ async def async_send_weixin_text(
 ) -> str:
     session = async_get_clientsession(hass)
     client_id = f"cn_im_hub_{uuid4().hex}"
+    msg: dict[str, Any] = {
+        "from_user_id": "",
+        "to_user_id": to_user_id,
+        "client_id": client_id,
+        "message_type": 2,
+        "message_state": 2,
+        "item_list": [{"type": 1, "text_item": {"text": text}}],
+    }
+    if context_token:
+        msg["context_token"] = context_token
     resp = await _api_post(
         session,
         base_url=base_url,
         endpoint="ilink/bot/sendmessage",
         payload={
-            "msg": {
-                "from_user_id": "",
-                "to_user_id": to_user_id,
-                "client_id": client_id,
-                "message_type": 2,
-                "message_state": 2,
-                "item_list": [{"type": 1, "text_item": {"text": text}}],
-                "context_token": context_token,
-            },
+            "msg": msg,
             "base_info": {"channel_version": "ha-cn-im-hub"},
         },
         token=token,
@@ -297,7 +318,16 @@ async def async_download_weixin_media(
     async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
         if resp.status >= 400:
             raise RuntimeError(f"CDN download {resp.status}")
-        encrypted = await resp.read()
+        # Read in chunks with size limit (20MB)
+        chunks: list[bytes] = []
+        received = 0
+        max_bytes = 20 * 1024 * 1024
+        async for chunk in resp.content.iter_chunked(64 * 1024):
+            received += len(chunk)
+            if received > max_bytes:
+                raise RuntimeError(f"WeChat media download exceeds {max_bytes} bytes limit")
+            chunks.append(chunk)
+        encrypted = b"".join(chunks)
     return _decrypt_aes_ecb(encrypted, key)
 
 
@@ -356,16 +386,30 @@ async def _async_upload_to_wechat_cdn(
         )
     else:
         raise ValueError(f"Weixin getuploadurl returned no usable upload url: {upload_data}")
-    async with session.post(
-        upload_url,
-        data=ciphertext,
-        headers={"Content-Type": "application/octet-stream"},
-        timeout=aiohttp.ClientTimeout(total=120),
-    ) as resp:
-        if resp.status >= 400:
-            raw = await resp.text()
-            raise RuntimeError(f"wechat cdn upload {resp.status}: {raw}")
-        encrypt_query_param = str(resp.headers.get("x-encrypted-param") or "")
+    # CDN upload with retry (3 attempts)
+    max_retries = 3
+    encrypt_query_param = ""
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with session.post(
+                upload_url,
+                data=ciphertext,
+                headers={"Content-Type": "application/octet-stream"},
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                if resp.status >= 500:
+                    raw = await resp.text()
+                    raise RuntimeError(f"wechat cdn upload server error {resp.status}: {raw}")
+                if resp.status >= 400:
+                    raw = await resp.text()
+                    raise RuntimeError(f"wechat cdn upload client error {resp.status}: {raw}")
+                encrypt_query_param = str(resp.headers.get("x-encrypted-param") or "")
+                break
+        except Exception as err:
+            if attempt >= max_retries:
+                raise
+            _LOGGER.debug("WeChat CDN upload attempt %d failed, retrying: %s", attempt, err)
+            await asyncio.sleep(1)
     if not encrypt_query_param:
         raise ValueError("Weixin CDN upload missing x-encrypted-param")
     return _UploadedMedia(
@@ -395,20 +439,22 @@ async def _async_send_message_with_item(
     item: dict[str, Any],
 ) -> str:
     client_id = f"cn_im_hub_{uuid4().hex}"
+    msg: dict[str, Any] = {
+        "from_user_id": "",
+        "to_user_id": to_user_id,
+        "client_id": client_id,
+        "message_type": 2,
+        "message_state": 2,
+        "item_list": [item],
+    }
+    if context_token:
+        msg["context_token"] = context_token
     resp = await _api_post(
         session,
         base_url=base_url,
         endpoint="ilink/bot/sendmessage",
         payload={
-            "msg": {
-                "from_user_id": "",
-                "to_user_id": to_user_id,
-                "client_id": client_id,
-                "message_type": 2,
-                "message_state": 2,
-                "item_list": [item],
-                "context_token": context_token,
-            },
+            "msg": msg,
             "base_info": {"channel_version": "ha-cn-im-hub"},
         },
         token=token,

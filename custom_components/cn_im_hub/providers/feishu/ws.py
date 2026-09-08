@@ -31,8 +31,9 @@ class FeishuWsClient:
         self._runner_task: asyncio.Task | None = None
         self._worker_thread: threading.Thread | None = None
         self._stop_flag = False
-        self._seen_message_ids: OrderedDict[str, None] = OrderedDict()
+        self._seen_message_ids: OrderedDict[str, float] = OrderedDict()
         self._seen_limit = 512
+        self._seen_ttl = 3600.0  # 1 hour
         self._status = "disconnected"
 
     @property
@@ -71,10 +72,10 @@ class FeishuWsClient:
 
     def _run_in_thread(self) -> None:
         import time
-        max_retries = 8
         retry_count = 0
+        max_delay = 300  # 5 minutes
         
-        while retry_count < max_retries and not self._stop_flag:
+        while not self._stop_flag:
             try:
                 self._start_sync_isolated()
                 retry_count = 0
@@ -82,15 +83,12 @@ class FeishuWsClient:
                 if self._stop_flag:
                     return
                 retry_count += 1
-                _LOGGER.warning("Feishu websocket error (attempt %d/%d): %s", retry_count, max_retries, err)
-                if retry_count >= max_retries:
-                    _LOGGER.error("Feishu connection failed after %d attempts, stopping", max_retries)
-                    self._status = "error"
-                    return
+                delay = min(5 * (2 ** min(retry_count - 1, 6)), max_delay)
+                _LOGGER.warning("Feishu websocket error (attempt %d, retry in %ds): %s", retry_count, delay, err)
             if self._stop_flag:
                 return
             self._status = "disconnected"
-            time.sleep(5)
+            time.sleep(delay if retry_count > 0 else 5)
             self._status = "connecting"
 
     def _start_sync_isolated(self) -> None:
@@ -151,10 +149,23 @@ class FeishuWsClient:
         message = event.get("message") or {}
         sender = event.get("sender") or {}
         message_id = str(message.get("message_id") or "")
-        if not message_id or message_id in self._seen_message_ids:
+        if not message_id:
             return
 
-        self._seen_message_ids[message_id] = None
+        import time
+        now = time.time()
+        # Clean up expired entries
+        while self._seen_message_ids:
+            oldest_id, oldest_time = next(iter(self._seen_message_ids.items()))
+            if now - oldest_time > self._seen_ttl:
+                self._seen_message_ids.popitem(last=False)
+            else:
+                break
+
+        if message_id in self._seen_message_ids:
+            return
+
+        self._seen_message_ids[message_id] = now
         self._seen_message_ids.move_to_end(message_id)
         if len(self._seen_message_ids) > self._seen_limit:
             self._seen_message_ids.popitem(last=False)

@@ -124,6 +124,9 @@ def _message_handler_factory(hass, api, tracker, agent_id, show_live_progress: b
         chat_id = message.get("chat_id", "")
         user_id = message.get("user_id", "")
         text = message.get("text", "").strip()
+        # Strip @_user_N placeholders from Feishu group @mentions
+        import re
+        text = re.sub(r"@_user_\d+", "", text).strip()
         receive_id = chat_id or user_id
         receive_type = "chat_id" if chat_id else "open_id"
         if not receive_id or not text:

@@ -102,6 +102,18 @@ _LIVE_PROGRESS_TYPING_IDLE_SECONDS = 12
 _LIVE_PROGRESS_SEND_INTERVAL_SECONDS = 2.0
 _LIVE_PROGRESS_TYPING_INTERVAL_SECONDS = 4.0
 _CONF_QQ_SHOW_LIVE_PROGRESS = "qq_show_live_progress"
+_QQ_PASSIVE_REPLY_LIMIT = 5
+_QQ_PASSIVE_AUX_REPLY_LIMIT = 2
+_QQ_RECONNECT_BASE_DELAY_SECONDS = 1
+_QQ_RECONNECT_MAX_DELAY_SECONDS = 60
+
+
+class _QQPassiveReplyLimitError(RuntimeError):
+    """Raised when a message_id has exhausted its passive reply budget."""
+
+
+class _QQFatalCloseError(RuntimeError):
+    """Raised on gateway close codes that mean the bot can no longer run."""
 
 
 @dataclass(slots=True)
@@ -132,6 +144,7 @@ class QQLiveProgressState:
     conversation_id: str
     last_progress_at: float
     last_sent_text: str = ""
+    replies_used: int = 0
 
 
 def _looks_like_markdown(text: str) -> bool:
@@ -412,6 +425,9 @@ class QQClient:
         self._status = "disconnected"
         self._token = ""
         self._token_expire = 0.0
+        self._gateway_seq: int | None = None
+        self._session_id = ""
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self._store: Store[dict[str, Any]] = Store(hass, _STORE_VERSION, f"cn_im_hub_qq_{subentry_id}")
         self._tracker = None
         self._reference_index: dict[str, QQReferenceEntry] = {}
@@ -440,6 +456,7 @@ class QQClient:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
+        self._stop_heartbeat()
         if self._ws and not self._ws.closed:
             await self._ws.close()
         self._ws = None
@@ -540,12 +557,17 @@ class QQClient:
         pending_tasks: list[asyncio.Task] = []
         
         async def _fire_and_forget(msg: str) -> None:
+            # Live progress shares the same msg_id passive budget as the real
+            # answer; cap it so the final reply always has quota left.
+            if state.replies_used >= _QQ_PASSIVE_AUX_REPLY_LIMIT:
+                return
             with contextlib.suppress(Exception):
                 await self._send_text_message(
                     inbound.target,
                     msg,
                     reply_to_message_id=inbound.message_id or None,
                 )
+                state.replies_used += 1
         
         try:
             while True:
@@ -582,47 +604,131 @@ class QQClient:
                     await self._send_typing_notify(user_openid, message_id)
             await asyncio.sleep(_LIVE_PROGRESS_TYPING_INTERVAL_SECONDS)
 
+    @staticmethod
+    def _retry_delay(attempt: int) -> int:
+        return min(_QQ_RECONNECT_BASE_DELAY_SECONDS * (2 ** min(attempt - 1, 6)), _QQ_RECONNECT_MAX_DELAY_SECONDS)
+
     async def _run(self) -> None:
-        max_retries = 8
-        retry_count = 0
-        while retry_count < max_retries:
+        consecutive_failures = 0
+        forced_delay = 0.0
+        while True:
             self._status = "connecting"
             try:
                 token = await self._get_token()
                 gateway = await self._get_gateway(token)
                 self._ws = await self._session.ws_connect(gateway, heartbeat=30)
                 self._status = "connected"
-                retry_count = 0
+                consecutive_failures = 0
+                forced_delay = 0.0
                 async for msg in self._ws:
                     if msg.type != aiohttp.WSMsgType.TEXT:
                         continue
                     await self._handle_payload(json.loads(msg.data))
             except asyncio.CancelledError:
                 raise
+            except _QQFatalCloseError as err:
+                _LOGGER.error("%s", err)
+                self._status = "error"
+                return
             except Exception as err:
-                retry_count += 1
-                _LOGGER.warning("QQ loop error (attempt %d/%d): %s", retry_count, max_retries, err)
-                if retry_count >= max_retries:
-                    _LOGGER.error("QQ connection failed after %d attempts, stopping", max_retries)
-                    self._status = "error"
-                    break
+                consecutive_failures += 1
+                _LOGGER.warning(
+                    "QQ loop error (attempt %d, retry in %ds): %s",
+                    consecutive_failures,
+                    self._retry_delay(consecutive_failures),
+                    err,
+                )
             finally:
+                self._stop_heartbeat()
+                close_code = self._ws.close_code if self._ws is not None else None
                 if self._ws and not self._ws.closed:
                     await self._ws.close()
                 self._ws = None
-                if self._status != "error":
+                forced_delay = self._apply_close_code(close_code)
+                if self._status not in ("error",):
                     self._status = "disconnected"
-            await asyncio.sleep(5)
+            await asyncio.sleep(forced_delay if forced_delay > 0 else self._retry_delay(consecutive_failures))
+
+    def _apply_close_code(self, code: int | None) -> float:
+        """Adjust reconnect behavior based on the gateway close code.
+
+        Returns an extra delay in seconds when the server mandates a wait.
+        """
+        if code is None:
+            return 0.0
+        if code == 4004:
+            _LOGGER.warning("QQ gateway auth failure (close 4004), forcing token refresh")
+            self._token = ""
+            self._token_expire = 0.0
+        elif code == 4008:
+            _LOGGER.warning("QQ gateway connect rate limited (close 4008), waiting 60s")
+            return 60.0
+        elif code in (4006, 4007, 4009) or 4900 <= code <= 4913:
+            _LOGGER.warning("QQ gateway session invalid (close %s), dropping session for re-identify", code)
+            self._session_id = ""
+        elif code in (4914, 4915):
+            raise _QQFatalCloseError(f"QQ bot banned or invalid (close {code}), stopping")
+        return 0.0
+
+    def _start_heartbeat(self, interval_ms: int) -> None:
+        self._stop_heartbeat()
+        interval = max(interval_ms / 1000, 5.0)
+
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await self._send_heartbeat()
+                except Exception as err:
+                    _LOGGER.debug("QQ heartbeat send failed: %s", err)
+                    return
+
+        self._heartbeat_task = asyncio.create_task(_loop())
+
+    def _stop_heartbeat(self) -> None:
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            self._heartbeat_task = None
+
+    async def _send_heartbeat(self) -> None:
+        if self._ws is not None and not self._ws.closed:
+            await self._ws.send_json({"op": 1, "d": self._gateway_seq})
 
     async def _handle_payload(self, payload: dict[str, Any]) -> None:
-        if payload.get("op") == 10:
-            await self._identify()
+        op = payload.get("op")
+        if op == 10:
+            self._start_heartbeat(int((payload.get("d") or {}).get("heartbeat_interval") or 30_000))
+            await self._identify_or_resume()
             return
-        if payload.get("op") != 0:
+        if op == 1:
+            await self._send_heartbeat()
+            return
+        if op == 7:
+            _LOGGER.info("QQ gateway requested reconnect (op 7)")
+            if self._ws is not None and not self._ws.closed:
+                await self._ws.close()
+            return
+        if op == 9:
+            _LOGGER.warning("QQ gateway reported invalid session (op 9), re-identifying")
+            self._session_id = ""
+            if not payload.get("d"):
+                await self._identify()
+            return
+        if op != 0:
             return
 
+        seq = payload.get("s")
+        if isinstance(seq, int):
+            self._gateway_seq = seq
         event_type = str(payload.get("t") or "")
         data = payload.get("d") or {}
+        if event_type == "READY":
+            self._session_id = str(data.get("session_id") or "")
+            _LOGGER.info("QQ gateway session ready (session_id=%s...)", self._session_id[:8])
+            return
+        if event_type == "RESUMED":
+            _LOGGER.info("QQ gateway session resumed")
+            return
         if event_type == "INTERACTION_CREATE":
             await self._handle_interaction(data)
             return
@@ -636,6 +742,26 @@ class QQClient:
         if inbound is None:
             return
         asyncio.create_task(self._process_inbound(inbound))
+
+    async def _identify_or_resume(self) -> None:
+        if self._session_id and self._gateway_seq is not None:
+            await self._resume()
+        else:
+            await self._identify()
+
+    async def _resume(self) -> None:
+        token = await self._get_token()
+        if self._ws is not None and not self._ws.closed:
+            await self._ws.send_json(
+                {
+                    "op": 6,
+                    "d": {
+                        "token": f"QQBot {token}",
+                        "session_id": self._session_id,
+                        "seq": self._gateway_seq,
+                    },
+                }
+            )
 
     async def _process_inbound(self, inbound: QQInboundMessage) -> None:
         if self._tracker is not None:
@@ -705,175 +831,182 @@ class QQClient:
                 if prev_was_media:
                     await asyncio.sleep(1.0)
                 prev_was_media = False
-                if isinstance(segment, TextSegment):
-                    await self._send_text_message(
-                        inbound.target,
-                        segment.text,
-                        reply_to_message_id=inbound.message_id or None,
-                    )
-                elif isinstance(segment, ImageSegment):
-                    image_bytes = await self._resolve_image(segment.source)
-                    if image_bytes is None:
-                        await self._send_text_message(
-                            inbound.target,
-                            f"Image source unavailable: {segment.source}",
-                            reply_to_message_id=inbound.message_id or None,
-                        )
-                        continue
-                    try:
-                        await self._send_image_message(
-                            inbound.target,
-                            image_bytes,
-                            target_type=inbound.target_kind,
-                            reply_to_message_id=inbound.message_id or None,
-                        )
-                        prev_was_media = True
-                    except ValueError:
-                        await self._send_text_message(
-                            inbound.target,
-                            "当前 QQ 频道暂不支持图片回复。",
-                            reply_to_message_id=inbound.message_id or None,
-                        )
-                    except Exception as err:
-                        _LOGGER.warning("QQ image send failed (%s): %s", segment.source, err)
-                        await self._send_text_message(
-                            inbound.target,
-                            f"图片发送失败: {segment.source}",
-                            reply_to_message_id=inbound.message_id or None,
-                        )
-                elif isinstance(segment, VoiceSegment):
-                    try:
-                        voice_bytes = await async_generate_tts_mp3(
-                            self._hass,
-                            segment.text,
-                        )
-                        await self._send_voice_message(
-                            inbound.target,
-                            voice_bytes,
-                            target_type=inbound.target_kind,
-                            reply_to_message_id=inbound.message_id or None,
-                        )
-                        prev_was_media = True
-                    except ValueError:
-                        await self._send_text_message(
-                            inbound.target,
-                            "当前 QQ 频道暂不支持语音回复。",
-                            reply_to_message_id=inbound.message_id or None,
-                        )
-                    except Exception as err:
-                        _LOGGER.warning("QQ TTS generation failed: %s", err)
+                try:
+                    if isinstance(segment, TextSegment):
                         await self._send_text_message(
                             inbound.target,
                             segment.text,
                             reply_to_message_id=inbound.message_id or None,
                         )
-                elif isinstance(segment, FileSegment):
-                    try:
-                        normalized_source = _normalize_media_source(segment.source)
-                        file_bytes, file_name = await self._resolve_media_source(
-                            normalized_source,
-                            default_name="attachment.bin",
-                        )
-                        await self._send_media_message(
-                            inbound.target,
-                            file_bytes,
-                            media_kind="file",
-                            target_type=inbound.target_kind,
-                            reply_to_message_id=inbound.message_id or None,
-                            file_name=file_name,
-                        )
-                        prev_was_media = True
-                    except Exception as err:
-                        _LOGGER.warning("QQ file send failed: %s", err)
-                        await self._send_text_message(
-                            inbound.target,
-                            f"File send failed: {type(err).__name__}: {err}",
-                            reply_to_message_id=inbound.message_id or None,
-                        )
-                elif isinstance(segment, VideoSegment):
-                    try:
-                        normalized_source = _normalize_media_source(segment.source)
-                        resolved_camera = await async_resolve_camera_entity(self._hass, normalized_source)
-                        if resolved_camera is not None:
-                            video_bytes, file_name = await async_record_camera_clip(
+                    elif isinstance(segment, ImageSegment):
+                        image_bytes = await self._resolve_image(segment.source)
+                        if image_bytes is None:
+                            await self._send_text_message(
+                                inbound.target,
+                                f"Image source unavailable: {segment.source}",
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                            continue
+                        try:
+                            await self._send_image_message(
+                                inbound.target,
+                                image_bytes,
+                                target_type=inbound.target_kind,
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                            prev_was_media = True
+                        except ValueError:
+                            await self._send_text_message(
+                                inbound.target,
+                                "当前 QQ 频道暂不支持图片回复。",
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                        except Exception as err:
+                            _LOGGER.warning("QQ image send failed (%s): %s", segment.source, err)
+                            await self._send_text_message(
+                                inbound.target,
+                                f"图片发送失败: {segment.source}",
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                    elif isinstance(segment, VoiceSegment):
+                        try:
+                            voice_bytes = await async_generate_tts_mp3(
                                 self._hass,
-                                resolved_camera,
+                                segment.text,
                             )
-                        elif _is_remote_stream_source(normalized_source):
-                            video_bytes, file_name = await async_record_remote_stream_clip(
-                                self._hass,
+                            await self._send_voice_message(
+                                inbound.target,
+                                voice_bytes,
+                                target_type=inbound.target_kind,
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                            prev_was_media = True
+                        except ValueError:
+                            await self._send_text_message(
+                                inbound.target,
+                                "当前 QQ 频道暂不支持语音回复。",
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                        except Exception as err:
+                            _LOGGER.warning("QQ TTS generation failed: %s", err)
+                            await self._send_text_message(
+                                inbound.target,
+                                segment.text,
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                    elif isinstance(segment, FileSegment):
+                        try:
+                            normalized_source = _normalize_media_source(segment.source)
+                            file_bytes, file_name = await self._resolve_media_source(
                                 normalized_source,
+                                default_name="attachment.bin",
                             )
-                        else:
-                            video_bytes, file_name = await self._resolve_media_source(
-                                normalized_source,
-                                default_name="video.mp4",
+                            await self._send_media_message(
+                                inbound.target,
+                                file_bytes,
+                                media_kind="file",
+                                target_type=inbound.target_kind,
+                                reply_to_message_id=inbound.message_id or None,
+                                file_name=file_name,
                             )
-                        await self._send_media_message(
-                            inbound.target,
-                            video_bytes,
-                            media_kind="video",
-                            target_type=inbound.target_kind,
-                            reply_to_message_id=inbound.message_id or None,
-                            file_name=file_name,
-                        )
-                        prev_was_media = True
-                    except Exception as err:
-                        _LOGGER.warning("QQ video send failed: %s", err)
+                            prev_was_media = True
+                        except Exception as err:
+                            _LOGGER.warning("QQ file send failed: %s", err)
+                            await self._send_text_message(
+                                inbound.target,
+                                f"File send failed: {type(err).__name__}: {err}",
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                    elif isinstance(segment, VideoSegment):
+                        try:
+                            normalized_source = _normalize_media_source(segment.source)
+                            resolved_camera = await async_resolve_camera_entity(self._hass, normalized_source)
+                            if resolved_camera is not None:
+                                video_bytes, file_name = await async_record_camera_clip(
+                                    self._hass,
+                                    resolved_camera,
+                                )
+                            elif _is_remote_stream_source(normalized_source):
+                                video_bytes, file_name = await async_record_remote_stream_clip(
+                                    self._hass,
+                                    normalized_source,
+                                )
+                            else:
+                                video_bytes, file_name = await self._resolve_media_source(
+                                    normalized_source,
+                                    default_name="video.mp4",
+                                )
+                            await self._send_media_message(
+                                inbound.target,
+                                video_bytes,
+                                media_kind="video",
+                                target_type=inbound.target_kind,
+                                reply_to_message_id=inbound.message_id or None,
+                                file_name=file_name,
+                            )
+                            prev_was_media = True
+                        except Exception as err:
+                            _LOGGER.warning("QQ video send failed: %s", err)
+                            await self._send_text_message(
+                                inbound.target,
+                                f"Video send failed: {type(err).__name__}: {err}",
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                    elif isinstance(segment, GifSegment):
+                        try:
+                            normalized_source = _normalize_media_source(segment.source)
+                            resolved_camera = await async_resolve_camera_entity(self._hass, normalized_source)
+                            if resolved_camera is not None:
+                                gif_bytes, _ = await async_capture_camera_gif(
+                                    self._hass,
+                                    resolved_camera,
+                                )
+                            else:
+                                gif_bytes, _ = await self._resolve_media_source(
+                                    normalized_source,
+                                    default_name="animated.gif",
+                                )
+                            await self._send_image_message(
+                                inbound.target,
+                                gif_bytes,
+                                target_type=inbound.target_kind,
+                                reply_to_message_id=inbound.message_id or None,
+                                file_name="animated.gif",
+                            )
+                            prev_was_media = True
+                        except Exception as err:
+                            _LOGGER.warning("QQ gif send failed: %s", err)
+                            await self._send_text_message(
+                                inbound.target,
+                                f"GIF source unavailable: {segment.source}",
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                    elif isinstance(segment, CardSegment):
+                        card_spec = parse_card_source(segment.source)
+                        if card_spec is None:
+                            await self._send_text_message(
+                                inbound.target,
+                                f"Invalid card: {segment.source[:100]}",
+                                reply_to_message_id=inbound.message_id or None,
+                            )
+                            continue
+                        card_id = card_spec.card_id or uuid.uuid4().hex[:8]
+                        card_spec.card_id = card_id
+                        keyboard = build_inline_keyboard(card_spec)
                         await self._send_text_message(
                             inbound.target,
-                            f"Video send failed: {type(err).__name__}: {err}",
+                            card_spec.text or " ",
                             reply_to_message_id=inbound.message_id or None,
+                            message_format="markdown",
+                            inline_keyboard=keyboard,
                         )
-                elif isinstance(segment, GifSegment):
-                    try:
-                        normalized_source = _normalize_media_source(segment.source)
-                        resolved_camera = await async_resolve_camera_entity(self._hass, normalized_source)
-                        if resolved_camera is not None:
-                            gif_bytes, _ = await async_capture_camera_gif(
-                                self._hass,
-                                resolved_camera,
-                            )
-                        else:
-                            gif_bytes, _ = await self._resolve_media_source(
-                                normalized_source,
-                                default_name="animated.gif",
-                            )
-                        await self._send_image_message(
-                            inbound.target,
-                            gif_bytes,
-                            target_type=inbound.target_kind,
-                            reply_to_message_id=inbound.message_id or None,
-                            file_name="animated.gif",
-                        )
-                        prev_was_media = True
-                    except Exception as err:
-                        _LOGGER.warning("QQ gif send failed: %s", err)
-                        await self._send_text_message(
-                            inbound.target,
-                            f"GIF source unavailable: {segment.source}",
-                            reply_to_message_id=inbound.message_id or None,
-                        )
-                elif isinstance(segment, CardSegment):
-                    card_spec = parse_card_source(segment.source)
-                    if card_spec is None:
-                        await self._send_text_message(
-                            inbound.target,
-                            f"Invalid card: {segment.source[:100]}",
-                            reply_to_message_id=inbound.message_id or None,
-                        )
-                        continue
-                    card_id = card_spec.card_id or uuid.uuid4().hex[:8]
-                    card_spec.card_id = card_id
-                    keyboard = build_inline_keyboard(card_spec)
-                    await self._send_text_message(
-                        inbound.target,
-                        card_spec.text or " ",
-                        reply_to_message_id=inbound.message_id or None,
-                        message_format="markdown",
-                        inline_keyboard=keyboard,
+                        self._card_contexts[card_id] = inbound
+                except _QQPassiveReplyLimitError:
+                    _LOGGER.warning(
+                        "QQ passive回复配额已用尽 (msg_id=%s), 丢弃剩余分段",
+                        inbound.message_id,
                     )
-                    self._card_contexts[card_id] = inbound
+                    break
         except Exception as err:
             _LOGGER.exception("QQ command execution failed: %s", err)
             await self._send_text_message(
@@ -1412,8 +1545,41 @@ class QQClient:
             json=body,
             timeout=15,
         ) as resp:
-            if resp.status >= 400:
-                raise RuntimeError(f"QQ send failed: {resp.status} {await resp.text()}")
+            if resp.status < 400:
+                return
+            error_body = await resp.text()
+            if resp.status == 401:
+                # Token invalidated server-side: refresh once and retry.
+                _LOGGER.warning("QQ send rejected with 401, refreshing token and retrying once")
+                self._token = ""
+                self._token_expire = 0.0
+                token = await self._get_token()
+                async with self._session.post(
+                    f"{_API_BASE}{path}",
+                    headers={"Authorization": f"QQBot {token}"},
+                    json=body,
+                    timeout=15,
+                ) as retry_resp:
+                    if retry_resp.status < 400:
+                        return
+                    raise RuntimeError(f"QQ send failed: {retry_resp.status} {await retry_resp.text()}")
+            if body.get("msg_type") == 2:
+                # Markdown requires special QQ approval; fall back to plain text.
+                _LOGGER.warning("QQ markdown send rejected (%s), falling back to plain text: %s", resp.status, error_body[:200])
+                plain: dict[str, Any] = {"content": text, "msg_type": 0}
+                if reply_to_message_id:
+                    plain["msg_id"] = reply_to_message_id
+                    plain["msg_seq"] = self._next_msg_seq(reply_to_message_id)
+                async with self._session.post(
+                    f"{_API_BASE}{path}",
+                    headers={"Authorization": f"QQBot {token}"},
+                    json=plain,
+                    timeout=15,
+                ) as plain_resp:
+                    if plain_resp.status >= 400:
+                        raise RuntimeError(f"QQ send failed: {plain_resp.status} {await plain_resp.text()}")
+                return
+            raise RuntimeError(f"QQ send failed: {resp.status} {error_body}")
 
     async def _send_proactive_text_message(
         self,
@@ -1846,7 +2012,7 @@ class QQClient:
                 "input_second": _TYPING_INPUT_SECOND,
             },
             "msg_id": message_id,
-            "msg_seq": self._next_msg_seq(message_id),
+            "msg_seq": self._next_msg_seq(message_id, auxiliary=True),
         }
         async with self._session.post(
             f"{_API_BASE}/v2/users/{user_openid}/messages",
@@ -1857,8 +2023,18 @@ class QQClient:
             if resp.status >= 400:
                 raise RuntimeError(f"QQ typing notify failed: {resp.status} {await resp.text()}")
 
-    def _next_msg_seq(self, message_id: str) -> int:
+    def _next_msg_seq(self, message_id: str, *, auxiliary: bool = False) -> int:
+        """Allocate the next passive reply sequence for a message_id.
+
+        QQ allows at most ~5 passive replies per inbound message_id. Typing
+        indicators and live-progress updates are auxiliary: they are capped
+        lower so the real answer always has budget left. Raises
+        _QQPassiveReplyLimitError once the budget is exhausted.
+        """
         seq = self._reply_sequences.get(message_id, 0) + 1
+        limit = _QQ_PASSIVE_AUX_REPLY_LIMIT if auxiliary else _QQ_PASSIVE_REPLY_LIMIT
+        if seq > limit:
+            raise _QQPassiveReplyLimitError(f"passive reply budget exhausted for msg_id {message_id}")
         self._reply_sequences[message_id] = seq
         if len(self._reply_sequences) > 200:
             oldest = next(iter(self._reply_sequences))

@@ -42,9 +42,11 @@ from ..base import ProviderSpec
 _LOGGER = logging.getLogger(__name__)
 _SERVER_IDS = ("server1", "server2")
 _STABLE_CONNECTION_THRESHOLD = 30.0
-_MAX_RECONNECT_ATTEMPTS = 8
+_MAX_RECONNECT_ATTEMPTS = 50
 _WATCHDOG_INTERVAL = 20.0
-_WATCHDOG_TIMEOUT = 0.0
+_WATCHDOG_TIMEOUT = 90.0
+_TASK_TIMEOUT_SECONDS = 360
+_MAX_SEEN_TASK_IDS = 512
 
 
 @dataclass(slots=True)
@@ -86,6 +88,8 @@ class XiaoYiClient:
         self._watchdog_task: asyncio.Task[None] | None = None
         self._active_prompts: dict[str, asyncio.Task[str]] = {}
         self._session_servers: dict[str, str] = {}
+        self._seen_task_ids: dict[str, None] = {}
+        self._request_ids: dict[str, str] = {}  # task_id -> request id (message.id)
         self._stopping = False
         self._tracker = None
         self._show_live_progress = show_live_progress
@@ -313,13 +317,15 @@ class XiaoYiClient:
 
         method = str(message.get("method") or "")
         action = str(message.get("action") or "")
-        if method == "clearContext":
+        if method == "clearContext" or action == "clear":
             if session_id:
                 await self._send_clear_context_response(str(message.get("id") or uuid4()), session_id)
-            return
-        if action == "clear":
-            if session_id:
-                await self._send_clear_context_response(str(message.get("id") or uuid4()), session_id)
+                # Clean up session state
+                self._session_servers.pop(session_id, None)
+                # Cancel any active prompt for this session
+                for task_id, task in list(self._active_prompts.items()):
+                    if self._request_ids.get(task_id) == session_id:
+                        task.cancel()
             return
         if method == "tasks/cancel" or action == "tasks/cancel":
             if session_id:
@@ -329,9 +335,21 @@ class XiaoYiClient:
             return
 
         task_id = str(message.get("id") or "")
+        # Dedup: dual servers may deliver the same request twice
+        if task_id in self._seen_task_ids:
+            return
+        self._seen_task_ids[task_id] = None
+        if len(self._seen_task_ids) > _MAX_SEEN_TASK_IDS:
+            self._seen_task_ids.pop(next(iter(self._seen_task_ids)), None)
+
         text = _extract_inbound_text(message)
         if not task_id or not session_id:
             return
+
+        # Capture the request id (message.id) for responses
+        request_id = str(message.get("id") or "")
+        self._request_ids[task_id] = request_id
+
         if self._tracker is not None:
             await self._tracker.async_record(
                 provider=PROVIDER_XIAOYI,
@@ -403,18 +421,27 @@ class XiaoYiClient:
                 conversation_id = f"xiaoyi:{session_id}"
                 progress_task = asyncio.create_task(self._run_live_progress_bridge(conversation_id, task_id, session_id))
                 try:
-                    reply = await execute_command(
-                        self._hass,
-                        command,
-                        conversation_id=conversation_id,
-                        agent_id=self._conversation_agent_id or None,
+                    reply = await asyncio.wait_for(
+                        execute_command(
+                            self._hass,
+                            command,
+                            conversation_id=conversation_id,
+                            agent_id=self._conversation_agent_id or None,
+                        ),
+                        timeout=_TASK_TIMEOUT_SECONDS,
                     )
+                except asyncio.TimeoutError:
+                    _LOGGER.warning("XiaoYi command timed out after %ds", _TASK_TIMEOUT_SECONDS)
+                    reply = "Task timed out. Please simplify the command and try again."
                 finally:
                     progress_task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await progress_task
             if reply:
                 await self._send_text_chunk(task_id, session_id, reply)
+            else:
+                # Empty reply: send a fallback so the user knows the task finished
+                await self._send_text_chunk(task_id, session_id, "Task finished without any output. Please try again.")
             await self._send_final(task_id, session_id)
             return reply
         except asyncio.CancelledError:
@@ -450,8 +477,9 @@ class XiaoYiClient:
         )
 
     async def _send_text_chunk(self, task_id: str, session_id: str, text: str) -> None:
+        request_id = self._request_ids.get(task_id) or str(uuid4())
         await self._send_jsonrpc_result(
-            request_id=str(uuid4()),
+            request_id=request_id,
             session_id=session_id,
             task_id=task_id,
             result={
@@ -468,8 +496,9 @@ class XiaoYiClient:
         )
 
     async def _send_final(self, task_id: str, session_id: str) -> None:
+        request_id = self._request_ids.get(task_id) or str(uuid4())
         await self._send_jsonrpc_result(
-            request_id=str(uuid4()),
+            request_id=request_id,
             session_id=session_id,
             task_id=task_id,
             result={
@@ -486,8 +515,9 @@ class XiaoYiClient:
         )
 
     async def _send_cancelled(self, task_id: str, session_id: str) -> None:
+        request_id = self._request_ids.get(task_id) or str(uuid4())
         await self._send_jsonrpc_result(
-            request_id=str(uuid4()),
+            request_id=request_id,
             session_id=session_id,
             task_id=task_id,
             result={
@@ -502,8 +532,9 @@ class XiaoYiClient:
         )
 
     async def _send_error(self, task_id: str, session_id: str, err: Exception) -> None:
+        request_id = self._request_ids.get(task_id) or str(uuid4())
         await self._send_jsonrpc_error(
-            request_id=str(uuid4()),
+            request_id=request_id,
             session_id=session_id,
             task_id=task_id,
             code="internal_error",

@@ -65,9 +65,8 @@ from .flow import WeixinProviderSubentryFlow
 
 _LOGGER = logging.getLogger(__name__)
 _STORE_VERSION = 1
-_MAX_CONSECUTIVE_FAILURES = 3
-_BACKOFF_DELAY_SECONDS = 30
-_RETRY_DELAY_SECONDS = 2
+_RECONNECT_BASE_DELAY_SECONDS = 5
+_MAX_RETRY_DELAY_SECONDS = 300
 _SESSION_PAUSE_SECONDS = 3600
 _TYPING_TICKET_TTL = 23 * 3600
 _CONF_WECHAT_SHOW_LIVE_PROGRESS = "wechat_show_live_progress"
@@ -295,11 +294,27 @@ class WeixinClient:
         except Exception as err:
             _LOGGER.debug("Weixin notifyStop failed (ignored) account=%s: %s", self._account_id, err)
 
+    def _check_push_context(self, target: str, context_token: str) -> None:
+        """Warn when pushing without a context_token (no recent inbound message).
+
+        The Weixin ilink protocol scopes proactive sends to a session window
+        opened by the user's latest message. Without a token the send may be
+        rejected by the server.
+        """
+        if not context_token:
+            _LOGGER.warning(
+                "Weixin push to %s has no context_token (no recent inbound message) — sending without context; if it fails, have the user message the bot first",
+                target,
+            )
+
     async def send_text(self, target: str, text: str, _: str) -> None:
+        if self._remaining_pause_seconds() > 0:
+            raise RuntimeError("Weixin session is paused due to stale token; please wait for the pause to expire or have the user send a message first")
         target = target.strip()
         if not target:
             raise ValueError("Weixin target user_id is required")
         context_token = self._context_tokens.get(target, "")
+        self._check_push_context(target, context_token)
         await async_send_weixin_text(
             self._hass,
             base_url=self._base_url,
@@ -310,10 +325,13 @@ class WeixinClient:
         )
 
     async def send_image(self, target: str, image_bytes: bytes, _: str) -> None:
+        if self._remaining_pause_seconds() > 0:
+            raise RuntimeError("Weixin session is paused due to stale token; please wait for the pause to expire or have the user send a message first")
         target = target.strip()
         if not target:
             raise ValueError("Weixin target user_id is required")
         context_token = self._context_tokens.get(target, "")
+        self._check_push_context(target, context_token)
         await async_send_weixin_image(
             self._hass,
             base_url=self._base_url,
@@ -346,12 +364,20 @@ class WeixinClient:
             return data, local_path.name or default_name
         raise ValueError(f"Media source not found: {candidate}")
 
+    @staticmethod
+    def _retry_delay(attempt: int) -> int:
+        """Exponential backoff for reconnects: 5s, 10s, 20s ... capped at 300s.
+
+        The long-poll loop must never give up permanently: while it is dead,
+        inbound messages are lost and cached context_tokens go stale, which
+        breaks proactive pushes until the user messages the bot again.
+        """
+        return min(_RECONNECT_BASE_DELAY_SECONDS * (2 ** min(attempt - 1, 6)), _MAX_RETRY_DELAY_SECONDS)
+
     async def _run(self) -> None:
         consecutive_failures = 0
-        total_failures = 0
-        max_total_failures = 8
         next_timeout_ms = 35_000
-        while not self._stopping and total_failures < max_total_failures:
+        while not self._stopping:
             remaining_pause = self._remaining_pause_seconds()
             if remaining_pause > 0:
                 self._status = "paused"
@@ -369,28 +395,33 @@ class WeixinClient:
                 errcode = self._extract_error_code(resp)
                 if errcode == SESSION_EXPIRED_ERRCODE:
                     self._pause_session()
+                    consecutive_failures = 0
                     _LOGGER.warning(
                         "Weixin session expired for account %s, pausing for %s minutes",
                         self._account_id,
                         _SESSION_PAUSE_SECONDS // 60,
                     )
-                    consecutive_failures = 0
                     continue
                 if self._is_api_error(resp):
                     consecutive_failures += 1
+                    delay = self._retry_delay(consecutive_failures)
                     _LOGGER.warning(
-                        "Weixin getupdates failed (%s/%s) account=%s ret=%s errcode=%s errmsg=%s",
+                        "Weixin getupdates failed (attempt %d, retry in %ds) account=%s ret=%s errcode=%s errmsg=%s",
                         consecutive_failures,
-                        _MAX_CONSECUTIVE_FAILURES,
+                        delay,
                         self._account_id,
                         resp.get("ret"),
                         resp.get("errcode"),
                         resp.get("errmsg"),
                     )
-                    await asyncio.sleep(_BACKOFF_DELAY_SECONDS if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES else _RETRY_DELAY_SECONDS)
-                    if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-                        consecutive_failures = 0
+                    await asyncio.sleep(delay)
                     continue
+                if consecutive_failures:
+                    _LOGGER.info(
+                        "Weixin connection restored for account %s after %d failures",
+                        self._account_id,
+                        consecutive_failures,
+                    )
                 consecutive_failures = 0
                 if isinstance(resp.get("longpolling_timeout_ms"), int) and resp["longpolling_timeout_ms"] > 0:
                     next_timeout_ms = int(resp["longpolling_timeout_ms"])
@@ -406,14 +437,17 @@ class WeixinClient:
                 raise
             except Exception as err:
                 consecutive_failures += 1
-                total_failures += 1
                 self._status = "error"
-                _LOGGER.warning("Weixin long-poll error (attempt %d/%d, account=%s): %s", total_failures, max_total_failures, self._account_id, err)
-                if total_failures >= max_total_failures:
-                    _LOGGER.error("Weixin connection failed after %d attempts, stopping (account=%s)", max_total_failures, self._account_id)
-                    break
-                await asyncio.sleep(30 if consecutive_failures >= 3 else 5)
-        self._status = "disconnected" if self._stopping else "error"
+                delay = self._retry_delay(consecutive_failures)
+                _LOGGER.warning(
+                    "Weixin long-poll error (attempt %d, retry in %ds, account=%s): %s",
+                    consecutive_failures,
+                    delay,
+                    self._account_id,
+                    err,
+                )
+                await asyncio.sleep(delay)
+        self._status = "disconnected"
 
     async def _get_typing_ticket(self, user_id: str, context_token: str) -> str:
         now = asyncio.get_running_loop().time()

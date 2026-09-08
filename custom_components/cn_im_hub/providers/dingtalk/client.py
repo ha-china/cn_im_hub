@@ -44,6 +44,8 @@ _LOGGER = logging.getLogger(__name__)
 _OAUTH_URL = DINGTALK_OAUTH_URL
 _API_BASE = DINGTALK_API_BASE
 _OAPI_BASE = DINGTALK_OAPI_BASE
+_DINGTALK_MEDIA_MAX_BYTES = 20 * 1024 * 1024
+_DINGTALK_MEDIA_TYPE_LIMITS = {"image": 10 * 1024 * 1024, "voice": 2 * 1024 * 1024}
 
 
 def _extract_stream_text(data: dict[str, Any]) -> str:
@@ -61,6 +63,11 @@ def _extract_stream_sender_and_target(data: dict[str, Any]) -> tuple[str, str, s
     sender_id = str(data.get("senderStaffId") or data.get("sender_staff_id") or data.get("senderId") or data.get("sender_id") or "").strip()
     conversation_id = str(data.get("conversationId") or data.get("conversation_id") or "").strip()
     display_name = str(data.get("senderNick") or data.get("sender_nick") or sender_id or conversation_id).strip()
+    # conversationType: "1" = single chat, "2" = group chat
+    conversation_type = str(data.get("conversationType") or "").strip()
+    if conversation_type == "2":
+        # Group chat: use conversation_id as target
+        return conversation_id or "group", "group", display_name
     if sender_id:
         return sender_id, "user", display_name
     return conversation_id or "group", "group", display_name
@@ -137,6 +144,10 @@ class DingTalkClient:
         ) as resp:
             if resp.status >= 400:
                 raise RuntimeError(f"DingTalk send failed: {resp.status} {await resp.text()}")
+            data = await resp.json(content_type=None)
+            # DingTalk returns HTTP 200 even on business failure; check processQueryKey.
+            if not data.get("processQueryKey"):
+                raise RuntimeError(f"DingTalk send failed (no processQueryKey): {data}")
 
     async def send_image(self, target: str, image_bytes: bytes, target_type: str) -> None:
         token = await self._get_token()
@@ -182,16 +193,29 @@ class DingTalkClient:
             import dingtalk_stream
 
             outer = self
+            seen_msg_ids: dict[str, None] = {}
+            _MAX_SEEN_MSG_IDS = 512
 
             class _Handler(dingtalk_stream.ChatbotHandler):
                 async def process(self, callback):
                     raw_data = callback.data if isinstance(callback.data, dict) else {}
                     incoming = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
+
+                    # Dedup on msgId — DingTalk redelivers if no ack/business reply
+                    # arrives within ~60s. We ack immediately to prevent redelivery.
+                    msg_id = str(raw_data.get("msgId") or "").strip()
+                    if msg_id:
+                        if msg_id in seen_msg_ids:
+                            return dingtalk_stream.AckMessage.STATUS_OK, "OK"
+                        seen_msg_ids[msg_id] = None
+                        if len(seen_msg_ids) > _MAX_SEEN_MSG_IDS:
+                            seen_msg_ids.pop(next(iter(seen_msg_ids)), None)
+
                     text = _extract_stream_text(raw_data)
                     if not text:
                         return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
-                    sender_id, _, display_name = _extract_stream_sender_and_target(raw_data)
+                    sender_id, target_type, display_name = _extract_stream_sender_and_target(raw_data)
                     try:
                         command = parse_command(text)
                     except ValueError as err:
@@ -201,23 +225,27 @@ class DingTalkClient:
                     if command is None:
                         return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
-                    fut = asyncio.run_coroutine_threadsafe(
-                        execute_command(
-                            outer._hass,
-                            command,
-                            conversation_id="dingtalk:stream",
-                            agent_id=outer._agent_id,
-                            user_id=display_name or sender_id,
-                        ),
-                        outer._hass.loop,
-                    )
-                    try:
-                        reply = fut.result(timeout=30)
-                    except Exception as err:
-                        _LOGGER.warning("DingTalk command execution failed: %s", err)
-                        reply = f"Execution failed: {type(err).__name__}"
+                    # Ack immediately, then execute asynchronously so the SDK
+                    # thread is not blocked by long-running commands.
+                    async def _execute_and_reply() -> None:
+                        try:
+                            reply = await execute_command(
+                                outer._hass,
+                                command,
+                                conversation_id=f"dingtalk:stream:{sender_id or target_type}",
+                                agent_id=outer._agent_id,
+                                user_id=display_name or sender_id,
+                            )
+                        except Exception as err:
+                            _LOGGER.warning("DingTalk command execution failed: %s", err)
+                            reply = f"Execution failed: {type(err).__name__}"
+                        if reply:
+                            try:
+                                self.reply_text(reply, incoming)
+                            except Exception as err:
+                                _LOGGER.warning("DingTalk reply_text failed: %s", err)
 
-                    self.reply_text(reply, incoming)
+                    asyncio.run_coroutine_threadsafe(_execute_and_reply(), outer._hass.loop)
                     return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
             credential = dingtalk_stream.Credential(self._client_id, self._client_secret)
@@ -276,6 +304,8 @@ class DingTalkClient:
     async def _upload_image(self, image_bytes: bytes) -> str:
         if not image_bytes:
             raise ValueError("DingTalk image data is empty")
+        if len(image_bytes) > _DINGTALK_MEDIA_TYPE_LIMITS["image"]:
+            raise ValueError(f"DingTalk image exceeds {_DINGTALK_MEDIA_TYPE_LIMITS['image']} bytes limit")
         token = await self._get_oapi_token()
         form = aiohttp.FormData()
         form.add_field("media", image_bytes, filename="camera.jpg", content_type="image/jpeg")
@@ -300,6 +330,11 @@ class DingTalkClient:
     async def _upload_media(self, file_bytes: bytes, media_type: str, filename: str) -> str:
         if not file_bytes:
             raise ValueError(f"DingTalk {media_type} data is empty")
+        if len(file_bytes) > _DINGTALK_MEDIA_MAX_BYTES:
+            raise ValueError(f"DingTalk {media_type} exceeds {_DINGTALK_MEDIA_MAX_BYTES} bytes limit")
+        type_limit = _DINGTALK_MEDIA_TYPE_LIMITS.get(media_type)
+        if type_limit is not None and len(file_bytes) > type_limit:
+            raise ValueError(f"DingTalk {media_type} exceeds {type_limit} bytes limit")
         token = await self._get_oapi_token()
         content_type = "application/octet-stream"
         if media_type == "voice":
