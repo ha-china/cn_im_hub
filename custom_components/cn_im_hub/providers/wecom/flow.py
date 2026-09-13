@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -26,13 +28,15 @@ from .auth import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_BIND_WINDOW_SECONDS = 30.0
+_BIND_POLL_INTERVAL_SECONDS = 2.0
 
 
 class WecomProviderSubentryFlow(ConfigSubentryFlow):
     """QR-first setup flow for the WeCom channel.
 
-    Mirrors the WeChat flow: the QR shows on the first screen. The menu
-    buttons below it only offer the manual-credentials fallback.
+    The QR shows on the first screen. "Bind" polls until the scan is
+    confirmed and finishes the flow; only "manual" jumps to a form.
     """
 
     _provider_spec: Any
@@ -61,14 +65,33 @@ class WecomProviderSubentryFlow(ConfigSubentryFlow):
             )
         return self.async_show_menu(
             step_id="user",
-            menu_options=["qr", "manual"],
+            menu_options=["bind", "manual"],
             description_placeholders=self._qr_placeholders(),
         )
 
-    async def async_step_qr(
+    async def async_step_bind(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        return await self.async_step_qr_wait(user_input)
+        """The user confirmed on the phone (or is about to): poll to finish."""
+        session = self._session
+        if session is None:
+            return await self.async_step_qr_wait(None)
+        deadline = time.monotonic() + _BIND_WINDOW_SECONDS
+        while True:
+            status, bot_id, secret = await self._async_poll_once(session)
+            if status == STATUS_PENDING and time.monotonic() < deadline:
+                await asyncio.sleep(_BIND_POLL_INTERVAL_SECONDS)
+                continue
+            break
+        if status == STATUS_PENDING:
+            # Not confirmed within the window: fall back to the wait form.
+            return self.async_show_form(
+                step_id="qr_wait",
+                data_schema=vol.Schema({}),
+                errors={"base": "auth_not_confirmed"},
+                description_placeholders=self._qr_placeholders(),
+            )
+        return await self._async_finish(bot_id, secret)
 
     async def async_step_manual(
         self, user_input: dict[str, Any] | None = None
@@ -90,9 +113,9 @@ class WecomProviderSubentryFlow(ConfigSubentryFlow):
     async def async_step_qr_wait(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
+        """Fallback form: shows the QR; submit polls once."""
         session = self._session
         if user_input is None:
-            # First entry from the menu: reuse the QR already rendered there.
             if session is not None and not session.expired:
                 return self.async_show_form(
                     step_id="qr_wait",
@@ -102,20 +125,11 @@ class WecomProviderSubentryFlow(ConfigSubentryFlow):
             return await self._async_render_fresh_qr(
                 "qr_expired" if session is not None else None
             )
+        if session is None:
+            return await self._async_render_fresh_qr(None)
         if session.expired:
             return await self._async_render_fresh_qr("qr_expired")
-
-        try:
-            status, bot_id, secret = await async_poll_wecom_qr(self.hass, session)
-        except Exception as err:
-            _LOGGER.warning("WeCom QR poll failed: %s", err)
-            return self.async_show_form(
-                step_id="qr_wait",
-                data_schema=vol.Schema({}),
-                errors={"base": "auth_not_confirmed"},
-                description_placeholders=self._qr_placeholders(),
-            )
-
+        status, bot_id, secret = await self._async_poll_once(session)
         if status == STATUS_PENDING:
             return self.async_show_form(
                 step_id="qr_wait",
@@ -123,7 +137,16 @@ class WecomProviderSubentryFlow(ConfigSubentryFlow):
                 errors={"base": "auth_not_confirmed"},
                 description_placeholders=self._qr_placeholders(),
             )
+        return await self._async_finish(bot_id, secret)
 
+    async def _async_poll_once(self, session: WecomQrSession) -> tuple[str, str, str]:
+        try:
+            return await async_poll_wecom_qr(self.hass, session)
+        except Exception as err:
+            _LOGGER.warning("WeCom QR poll failed: %s", err)
+            return STATUS_PENDING, "", ""
+
+    async def _async_finish(self, bot_id: str, secret: str) -> SubentryFlowResult:
         data = {CONF_WECOM_BOT_ID: bot_id, CONF_WECOM_SECRET: secret}
         try:
             await self._provider_spec.validate_config(self.hass, data)

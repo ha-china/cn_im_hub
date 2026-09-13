@@ -17,8 +17,8 @@
 ### 方式一：扫码一键创建（推荐，无需后台建应用）
 
 1. 在 HA 添加飞书通道时，弹窗会直接显示二维码：用手机飞书扫码，在页面中确认创建应用（权限与 WebSocket 事件订阅自动预置）。
-2. 完成后回到 HA 点击「扫码绑定」，凭据自动回填并完成验证。
-3. 若已有应用或无法扫码，点击「手动填写凭据」并填入 `app_id`、`app_secret`。
+2. 完成后回到 HA 点击「绑定」，凭据自动回填并完成验证。
+3. 若已有应用或无法扫码，点击「手动输入」并填入 `app_id`、`app_secret`。
 
 ### 方式二：手动创建应用
 
@@ -30,15 +30,15 @@
    ![飞书-权限管理](docs/images/feishu/feishu-step4-permissions.png)
 4. 在“事件订阅”选择 WebSocket 长连接并添加 `im.message.receive_v1`，然后发布应用。  
    ![飞书-事件订阅](docs/images/feishu/feishu-step6-event-subscription.png)
-5. 回到 HA 选择「手动填写凭据」，填写：`app_id`、`app_secret`。
+5. 回到 HA 选择「手动输入」，填写：`app_id`、`app_secret`。
 
 ## WeCom（企业微信）
 
 ### 方式一：扫码绑定（推荐，无需后台建机器人）
 
 1. 在 HA 添加企微通道时，弹窗会直接显示二维码：用手机企业微信扫码并确认，Bot ID 与 Secret 自动获取。
-2. 完成后回到 HA 点击「扫码绑定」。
-3. 若已有机器人或无法扫码，点击「手动填写凭据」并填入 `bot_id`、`secret`。
+2. 完成后回到 HA 点击「绑定」。
+3. 若已有机器人或无法扫码，点击「手动输入」并填入 `bot_id`、`secret`。
 
 ### 方式二：手动创建机器人
 
@@ -49,7 +49,7 @@
 3. 在详情页保存 `bot_id` 与 `secret`。  
    ![企微-BotID与Secret](docs/images/wecom/wecom-setup-2-bot-id-secret.png)
 4. 确认机器人具备收发消息能力。
-5. 回到 HA 选择「手动填写凭据」，填写：`bot_id`、`secret`。
+5. 回到 HA 选择「手动输入」，填写：`bot_id`、`secret`。
 
 ## QQ（QQ 开放平台机器人）
 
@@ -68,7 +68,7 @@
 
 1. 在 HA 添加钉钉通道时，弹窗会直接显示二维码：用手机钉钉扫码，按页面提示一键创建机器人（消息权限与 Stream 模式自动配置），Client ID 与 Client Secret 自动获取。
 2. 完成后回到 HA 点击「扫码绑定」。
-3. 若已有应用或无法扫码，点击「手动填写凭据」并填入 `dingtalk_client_id`、`dingtalk_client_secret`。
+3. 若已有应用或无法扫码，点击「手动输入」并填入 `dingtalk_client_id`、`dingtalk_client_secret`。
 
 ### 方式二：手动创建应用
 
@@ -90,7 +90,7 @@
 6. 把机器人添加到目标群进行联调，确认机器人可回复。  
    ![钉钉-群内添加机器人](docs/images/dingtalk/dingtalk-step6-add-bot-in-group.png)
    ![钉钉-机器人回复示例](docs/images/dingtalk/dingtalk-step6-bot-reply.png)
-7. 回到 HA 选择「手动填写凭据」，填写：
+7. 回到 HA 选择「手动输入」，填写：
    - `dingtalk_client_id`
    - `dingtalk_client_secret`
 

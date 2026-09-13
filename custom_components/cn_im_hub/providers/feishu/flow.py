@@ -30,14 +30,14 @@ from .auth import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-_CONFIRM_POLL_SECONDS = 30.0
+_BIND_WINDOW_SECONDS = 30.0
 
 
 class FeishuProviderSubentryFlow(ConfigSubentryFlow):
     """QR-first setup flow for the Feishu channel.
 
-    Mirrors the WeChat flow: the QR shows on the first screen. The menu
-    buttons below it only offer the manual-credentials fallback.
+    The QR shows on the first screen. "Bind" polls until the scan is
+    confirmed and finishes the flow; only "manual" jumps to a form.
     """
 
     _provider_spec: Any
@@ -74,14 +74,51 @@ class FeishuProviderSubentryFlow(ConfigSubentryFlow):
             )
         return self.async_show_menu(
             step_id="user",
-            menu_options=["qr", "manual"],
+            menu_options=["bind", "manual"],
             description_placeholders=self._qr_placeholders(),
         )
 
-    async def async_step_qr(
+    async def async_step_bind(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        return await self.async_step_qr_wait(user_input)
+        """The user confirmed on the phone (or is about to): poll to finish."""
+        registration = self._registration
+        if registration is None:
+            await self._async_start_registration()
+            registration = self._registration
+            if registration is None:
+                return self.async_show_form(
+                    step_id="qr_wait",
+                    data_schema=vol.Schema({}),
+                    errors={"base": "registration_failed"},
+                )
+        if registration.expired:
+            return await self._async_restart("qr_expired")
+
+        outcome, result = await async_wait_feishu_registration(
+            registration, _BIND_WINDOW_SECONDS
+        )
+        if outcome == OUTCOME_PENDING:
+            # Not confirmed within the window: fall back to the wait form.
+            return self.async_show_form(
+                step_id="qr_wait",
+                data_schema=vol.Schema({}),
+                errors={"base": "auth_not_confirmed"},
+                description_placeholders=self._qr_placeholders(),
+            )
+        if outcome != OUTCOME_OK:
+            error_key = {
+                OUTCOME_EXPIRED: "qr_expired",
+                OUTCOME_DENIED: "auth_denied",
+            }.get(outcome, "registration_failed")
+            _LOGGER.warning("Feishu QR registration ended: %s", outcome)
+            return await self._async_restart(error_key)
+
+        app_id = str(result.get("client_id") or "").strip()
+        app_secret = str(result.get("client_secret") or "").strip()
+        if not app_id or not app_secret:
+            return await self._async_restart("registration_failed")
+        return await self._async_finish(app_id, app_secret)
 
     async def async_step_manual(
         self, user_input: dict[str, Any] | None = None
@@ -103,58 +140,10 @@ class FeishuProviderSubentryFlow(ConfigSubentryFlow):
     async def async_step_qr_wait(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
-        registration = self._registration
+        """Fallback form: shows the QR; submit polls again."""
         if user_input is None:
             return await self._async_show_qr_form()
-
-        if registration is None:
-            await self._async_start_registration()
-            registration = self._registration
-            if registration is None:
-                return self.async_show_form(
-                    step_id="qr_wait",
-                    data_schema=vol.Schema({}),
-                    errors={"base": "registration_failed"},
-                )
-
-        if registration.expired:
-            return await self._async_restart("qr_expired")
-
-        outcome, result = await async_wait_feishu_registration(
-            registration, _CONFIRM_POLL_SECONDS
-        )
-        if outcome == OUTCOME_PENDING:
-            return self.async_show_form(
-                step_id="qr_wait",
-                data_schema=vol.Schema({}),
-                errors={"base": "auth_not_confirmed"},
-                description_placeholders=self._qr_placeholders(),
-            )
-        if outcome != OUTCOME_OK:
-            error_key = {
-                OUTCOME_EXPIRED: "qr_expired",
-                OUTCOME_DENIED: "auth_denied",
-            }.get(outcome, "registration_failed")
-            _LOGGER.warning("Feishu QR registration ended: %s", outcome)
-            return await self._async_restart(error_key)
-
-        app_id = str(result.get("client_id") or "").strip()
-        app_secret = str(result.get("client_secret") or "").strip()
-        if not app_id or not app_secret:
-            return await self._async_restart("registration_failed")
-        cancel_registration(registration)
-        data = {"app_id": app_id, "app_secret": app_secret}
-        try:
-            await self._provider_spec.validate_config(self.hass, data)
-        except Exception as err:
-            _LOGGER.warning("Feishu QR credential validation failed: %s", err)
-            return self.async_show_form(
-                step_id="qr_wait",
-                data_schema=vol.Schema({}),
-                errors={"base": "cannot_connect"},
-                description_placeholders=self._qr_placeholders(),
-            )
-        return await self._async_complete(data)
+        return await self.async_step_bind(user_input)
 
     async def _async_show_qr_form(self) -> SubentryFlowResult:
         """Render the QR form, carrying any pending error from a restart."""
@@ -203,8 +192,19 @@ class FeishuProviderSubentryFlow(ConfigSubentryFlow):
         self._pending_error = error_key
         return await self.async_step_qr_wait(None)
 
-    async def _async_complete(self, data: dict[str, Any]) -> SubentryFlowResult:
+    async def _async_finish(self, app_id: str, app_secret: str) -> SubentryFlowResult:
         cancel_registration(self._registration)
+        data = {"app_id": app_id, "app_secret": app_secret}
+        try:
+            await self._provider_spec.validate_config(self.hass, data)
+        except Exception as err:
+            _LOGGER.warning("Feishu QR credential validation failed: %s", err)
+            return self.async_show_form(
+                step_id="qr_wait",
+                data_schema=vol.Schema({}),
+                errors={"base": "cannot_connect"},
+                description_placeholders=self._qr_placeholders(),
+            )
         return await _complete(self, self._provider_spec, data)
 
     def _qr_placeholders(self) -> dict[str, str]:

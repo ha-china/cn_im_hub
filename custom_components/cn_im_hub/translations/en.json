@@ -88,10 +88,14 @@
       "step": {
         "user": {
           "title": "Add Feishu",
-          "description": "Scan the QR below with the Feishu mobile app and confirm the app creation, then click Scan to Bind. Choose Manual if you already have an app or cannot scan.\n\n{qr_markdown}\n\nQR URL: {qr_url}",
+          "description": "Scan the QR below with the Feishu mobile app, confirm the app creation, then click Bind. Choose Enter manually if you already have an app or cannot scan.\n\n{qr_markdown}\n\nQR URL: {qr_url}",
           "menu_options": {
-            "qr": "Scan to Bind (recommended)",
-            "manual": "Enter credentials manually"
+            "bind": "Bind",
+            "manual": "Enter manually"
+          },
+          "menu_option_descriptions": {
+            "bind": "After scanning and confirming, click to finish binding",
+            "manual": "Enter the App ID and App Secret directly"
           }
         },
         "qr_wait": {
@@ -130,10 +134,14 @@
       "step": {
         "user": {
           "title": "Add WeCom",
-          "description": "Scan the QR below with the WeCom mobile app and confirm, then click Scan to Bind. Choose Manual if you already have a bot or cannot scan.\n\n{qr_markdown}\n\nQR URL: {qr_url}",
+          "description": "Scan the QR below with the WeCom mobile app and confirm, then click Bind. Choose Enter manually if you already have a bot or cannot scan.\n\n{qr_markdown}\n\nQR URL: {qr_url}",
           "menu_options": {
-            "qr": "Scan to Bind (recommended)",
-            "manual": "Enter credentials manually"
+            "bind": "Bind",
+            "manual": "Enter manually"
+          },
+          "menu_option_descriptions": {
+            "bind": "After scanning and confirming, click to finish binding",
+            "manual": "Enter the Bot ID and Secret directly"
           }
         },
         "qr_wait": {
@@ -197,10 +205,14 @@
       "step": {
         "user": {
           "title": "Add DingTalk",
-          "description": "Scan the QR below with the DingTalk mobile app and follow the page to create the bot, then click Scan to Bind. Choose Manual if you already have an app or cannot scan.\n\n{qr_markdown}\n\nQR URL: {qr_url}",
+          "description": "Scan the QR below with the DingTalk mobile app, follow the page to create the bot, then click Bind. Choose Enter manually if you already have an app or cannot scan.\n\n{qr_markdown}\n\nQR URL: {qr_url}",
           "menu_options": {
-            "qr": "Scan to Bind (recommended)",
-            "manual": "Enter credentials manually"
+            "bind": "Bind",
+            "manual": "Enter manually"
+          },
+          "menu_option_descriptions": {
+            "bind": "After scanning and confirming, click to finish binding",
+            "manual": "Enter the Client ID and Client Secret directly"
           }
         },
         "qr_wait": {

@@ -88,10 +88,14 @@
       "step": {
         "user": {
           "title": "添加飞书",
-          "description": "请用手机飞书扫描下方二维码，在页面中确认创建应用，完成后点击「扫码绑定」继续；若已有应用或无法扫码，选择「手动填写凭据」。\n\n{qr_markdown}\n\n二维码链接：{qr_url}",
+          "description": "请用手机飞书扫描下方二维码，在页面中确认创建应用，然后点击「绑定」完成接入；若已有应用或无法扫码，选择「手动输入」。\n\n{qr_markdown}\n\n二维码链接：{qr_url}",
           "menu_options": {
-            "qr": "扫码绑定（推荐）",
-            "manual": "手动填写凭据"
+            "bind": "绑定",
+            "manual": "手动输入"
+          },
+          "menu_option_descriptions": {
+            "bind": "扫码并确认后，点击此按钮自动完成绑定",
+            "manual": "直接填写 App ID 和 App Secret"
           }
         },
         "qr_wait": {
@@ -130,10 +134,14 @@
       "step": {
         "user": {
           "title": "添加企业微信",
-          "description": "请用手机企业微信扫描下方二维码并确认，完成后点击「扫码绑定」继续；若已有机器人或无法扫码，选择「手动填写凭据」。\n\n{qr_markdown}\n\n二维码链接：{qr_url}",
+          "description": "请用手机企业微信扫描下方二维码并确认，然后点击「绑定」完成接入；若已有机器人或无法扫码，选择「手动输入」。\n\n{qr_markdown}\n\n二维码链接：{qr_url}",
           "menu_options": {
-            "qr": "扫码绑定（推荐）",
-            "manual": "手动填写凭据"
+            "bind": "绑定",
+            "manual": "手动输入"
+          },
+          "menu_option_descriptions": {
+            "bind": "扫码并确认后，点击此按钮自动完成绑定",
+            "manual": "直接填写 Bot ID 和 Secret"
           }
         },
         "qr_wait": {
@@ -197,10 +205,14 @@
       "step": {
         "user": {
           "title": "添加钉钉",
-          "description": "请用手机钉钉扫描下方二维码，按页面提示一键创建机器人，完成后点击「扫码绑定」继续；若已有应用或无法扫码，选择「手动填写凭据」。\n\n{qr_markdown}\n\n二维码链接：{qr_url}",
+          "description": "请用手机钉钉扫描下方二维码，按页面提示一键创建机器人，然后点击「绑定」完成接入；若已有应用或无法扫码，选择「手动输入」。\n\n{qr_markdown}\n\n二维码链接：{qr_url}",
           "menu_options": {
-            "qr": "扫码绑定（推荐）",
-            "manual": "手动填写凭据"
+            "bind": "绑定",
+            "manual": "手动输入"
+          },
+          "menu_option_descriptions": {
+            "bind": "扫码并确认后，点击此按钮自动完成绑定",
+            "manual": "直接填写 Client ID 和 Client Secret"
           }
         },
         "qr_wait": {
