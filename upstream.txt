@@ -7,7 +7,18 @@ Feishu
 - URL: https://open.feishu.cn/
 - npm: https://www.npmjs.com/package/@larksuiteoapi/feishu-openclaw-plugin
 - npm latest: 2026.3.8
-- Last checked: 2026-08-24
+- Last checked: 2026-09-13
+- Notes: npm package unchanged since 2026.3.8; its onboarding CLI still asks
+  for manual appId/appSecret. The platform "one-click app creation" (扫码一键
+  创建飞书智能体应用) is exposed via the official Python SDK lark-oapi >= 1.5.5:
+  `lark_oapi.register_app` / `aregister_app` (RFC 8628 device grant against
+  https://accounts.feishu.cn/oauth/v1/app/registration, init -> begin ->
+  poll; base template presets bot capability, im scopes, im.message.receive_v1
+  and WebSocket delivery; returns client_id/client_secret/user_info with
+  open_id + tenant_brand; Lark tenants trigger domain_switched to
+  accounts.larksuite.com). We adopted this in the Feishu subentry flow
+  (providers/feishu/flow.py + auth.py, QR shown via segno data URL, manual
+  entry kept as fallback).
 
 WeCom
 - Source: WeCom Open Platform
@@ -18,34 +29,67 @@ WeCom
 - Source package: @wecom/wecom-openclaw-cli
 - npm: https://www.npmjs.com/package/@wecom/wecom-openclaw-cli
 - npm latest (cli): 1.1.1
-- Notes: Official plugin supports Bot mode, Agent mode, interactive onboarding, multi-account routing, Agent/Bot webhook entrypoints, and Bot WebSocket to Agent HTTP fallback. The 2026-07-02 malformed `latest` tag (`20206.7.201`) has since been replaced by normal versions; current latest is 2026.8.17. Since 2026.8.17 the plugin replaced the `wecom_mcp` tool with a `wecom-cli` tool and rewritten `wecomcli-*` skills; core aibot WebSocket protocol commands are unchanged.
-- Last checked: 2026-08-24
+- Notes: Official plugin supports Bot mode, Agent mode, interactive onboarding, multi-account routing, Agent/Bot webhook entrypoints, and Bot WebSocket to Agent HTTP fallback. Since 2026.8.17 the plugin replaced the `wecom_mcp` tool with a `wecom-cli` tool and rewritten `wecomcli-*` skills; core aibot WebSocket protocol commands are unchanged. No new release since the 2026-08-24 check.
+- QR binding: wecom-openclaw-cli 1.1.1 dist/utils/qrcode.js implements
+  scan-to-bind against the admin-side service:
+  GET https://work.weixin.qq.com/ai/qc/generate?source=...&plat={1 darwin|2 win32|3 linux}
+    -> {data:{scode, auth_url}} (auth_url is the QR content; fallback page
+    https://work.weixin.qq.com/ai/qc/gen?source=...&scode=...)
+  GET https://work.weixin.qq.com/ai/qc/query_result?scode=... (CLI polls 3s,
+    5min TTL) -> {data:{status:"success", bot_info:{botid, secret}}}.
+  Adopted in providers/wecom/auth.py + flow.py (poll once per submit).
+- Last checked: 2026-09-13
 
 QQ
 - Source: Hello Claw / OpenClaw QQ bot flow
 - URL: https://datawhalechina.github.io/hello-claw/cn/adopt/chapter3/
 - npm: https://www.npmjs.com/package/@sliverp/qqbot
 - npm latest: 1.6.1
-- Last checked: 2026-08-24
+- Notes: No QR/device onboarding in the package (manual app creation at
+  q.qq.com; src/onboarding.ts prompts for AppID + ClientSecret). The
+  q.qq.com/qqbot/openclaw/login.html page is a web-only quick-register SPA
+  with no device API, so no scan-to-bind integration is possible yet.
+- Last checked: 2026-09-13
 
 DingTalk
 - Source: DingTalk OpenClaw access docs
 - URL: https://open.dingtalk.com/document/dingstart/build-dingtalk-ai-employees
 - npm: https://www.npmjs.com/package/@dingtalk-real-ai/dingtalk-connector
-- npm latest: 0.8.25
-- Notes: 0.8.25 improves AI Card lifecycle reliability (wait for in-flight card creation on close, seal streaming before idle/error close, 10-minute watchdog for upstream hangs, single-flight finalization). OpenClaw plugin SDK infra only — not relevant to our Python integration.
-- Last checked: 2026-08-24
+- npm latest: 0.8.26
+- Notes: 0.8.26 (2026-09-03) is entirely host/plugin-side: segmented plugin
+  SDK entry points, host config snapshots, host-owned session queue and
+  interrupt semantics, Channel Secret Contract, agent routing via the host;
+  requires OpenClaw >= 2026.8.1. Only DingTalk-side change is a robustness
+  guard for empty image-upload responses. No websocket/AI Card/message
+  protocol changes - nothing to adopt for our Python integration.
+- QR binding: 0.8.26 src/device-auth.ts implements one-click bot creation:
+  POST https://oapi.dingtalk.com/app/registration/init {source:"DING_DWS_CLAW"}
+    -> {errcode:0, nonce}
+  POST .../app/registration/begin {nonce} -> {device_code,
+    verification_uri_complete (QR content), expires_in (default 7200),
+    interval (default 3)}
+  POST .../app/registration/poll {device_code} -> {status:
+    WAITING|SUCCESS|FAIL|EXPIRED, client_id, client_secret, fail_reason}.
+  Scan with the DingTalk app; SUCCESS returns the same client_id/secret the
+  manual path stores. Adopted in providers/dingtalk/auth.py + flow.py
+  (poll once per submit).
+- Last checked: 2026-09-13
 
 WeChat
 - Source package: @tencent-weixin/openclaw-weixin
 - npm: https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin
 - Source package: @tencent-weixin/openclaw-weixin-cli
 - npm: https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin-cli
-- npm latest: 2.4.6
+- npm latest: 2.4.8
 - npm latest (cli): 2.1.4
 - Local reference: .tmp_cli_ref/weixin-plugin-2.0.1/package/ and .tmp_cli_ref/package/
-- Notes: Weixin 2.x is documented as active for OpenClaw >= 2026.3.22; current npm latest is 2.4.6, CLI latest is 2.1.4, and image upload response may return upload_full_url instead of upload_param.
-- Last checked: 2026-08-24
+- Notes: 2.4.6 -> 2.4.8 diff is a single plugin-SDK import path change
+  (channel-runtime -> channel-message, host-coupling only) plus the
+  qrcode-terminal dep for its QR login; dist/src/auth/login-qr.js is
+  byte-identical to what we already ported (our auth.py implements
+  get_bot_qrcode/get_qrcode_status incl. verify code, IDC redirect,
+  binded_redirect). 2.4.9-beta.0 exists. Nothing to adopt.
+- Last checked: 2026-09-13
 
 XiaoYi
 - Source package: @ynhcj/xiaoyi
@@ -55,4 +99,6 @@ XiaoYi
   - https://developer.huawei.com/consumer/cn/doc/service/open-claw-base-0000002518704040
   - https://developer.huawei.com/consumer/cn/doc/service/quick-start-0000002469548009
   - https://developer.huawei.com/consumer/cn/doc/service/openclaw-0000002518410344
-- Last checked: 2026-08-24
+- Notes: AK/SK authentication only (Huawei developer console); no QR/device
+  onboarding in the 2.5.7 package.
+- Last checked: 2026-09-13
