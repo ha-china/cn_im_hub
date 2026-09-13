@@ -191,7 +191,13 @@ class DingTalkClient:
         """Use official Stream SDK if available, without webhook mode."""
         self._status = "connecting"
         try:
-            import dingtalk_stream
+            # dingtalk_stream (<=2.x) compiles with a 'return' in a 'finally'
+            # SyntaxWarning; silence it so HA doesn't surface it as our error.
+            import warnings
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=SyntaxWarning)
+                import dingtalk_stream
 
             outer = self
             seen_msg_ids: dict[str, None] = {}
@@ -242,7 +248,9 @@ class DingTalkClient:
                             reply = f"Execution failed: {type(err).__name__}"
                         if reply:
                             try:
-                                self.reply_text(reply, incoming)
+                                # reply_text hits the webhook via sync requests;
+                                # this coroutine runs on the loop, so offload it.
+                                await outer._hass.async_add_executor_job(self.reply_text, reply, incoming)
                             except Exception as err:
                                 _LOGGER.warning("DingTalk reply_text failed: %s", err)
 
@@ -545,10 +553,15 @@ async def async_setup_provider(
     tracker = await async_get_tracker(hass, subentry_id)
 
     async def _process_rich_reply(reply: str, target: str, target_type: str, reply_text_func, incoming) -> None:
+        async def _reply(text: str) -> None:
+            # reply_text_func is the SDK's sync webhook call; this coroutine
+            # runs on the loop, so keep the request off it.
+            await hass.async_add_executor_job(reply_text_func, text, incoming)
+
         segments = parse_reply_segments(reply)
         for seg in segments:
             if isinstance(seg, TextSegment):
-                reply_text_func(seg.text, incoming)
+                await _reply(seg.text)
             elif isinstance(seg, ImageSegment):
                 try:
                     image_bytes = await _resolve_image(hass, seg.source)
@@ -556,7 +569,7 @@ async def async_setup_provider(
                         await client.send_image(target, image_bytes, target_type)
                 except Exception as err:
                     _LOGGER.warning("DingTalk image send failed: %s", err)
-                    reply_text_func(f"Image send failed: {err}", incoming)
+                    await _reply(f"Image send failed: {err}")
             elif isinstance(seg, VideoSegment):
                 try:
                     result = await _resolve_video(hass, seg.source)
@@ -564,10 +577,10 @@ async def async_setup_provider(
                         video_bytes, file_name = result
                         await client.send_video(target, video_bytes, file_name, target_type)
                     else:
-                        reply_text_func(f"📎 {seg.source}", incoming)
+                        await _reply(f"📎 {seg.source}")
                 except Exception as err:
                     _LOGGER.warning("DingTalk video send failed: %s", err)
-                    reply_text_func(f"📎 {seg.source}", incoming)
+                    await _reply(f"📎 {seg.source}")
             elif isinstance(seg, FileSegment):
                 try:
                     media_bytes = await _resolve_media(hass, seg.source)
@@ -575,10 +588,10 @@ async def async_setup_provider(
                         name = seg.source.rsplit("/", 1)[-1] or "file"
                         await client.send_file(target, media_bytes, name, target_type)
                     else:
-                        reply_text_func(f"📎 {seg.source}", incoming)
+                        await _reply(f"📎 {seg.source}")
                 except Exception as err:
                     _LOGGER.warning("DingTalk file send failed: %s", err)
-                    reply_text_func(f"📎 {seg.source}", incoming)
+                    await _reply(f"📎 {seg.source}")
             elif isinstance(seg, VoiceSegment):
                 try:
                     from ...media.tts import async_generate_tts_mp3, is_edge_tts_available
@@ -587,10 +600,14 @@ async def async_setup_provider(
                         await client.send_voice(target, mp3_bytes, "voice.mp3", target_type)
                 except Exception as err:
                     _LOGGER.warning("DingTalk voice send failed: %s", err)
-                    reply_text_func(seg.text, incoming)
+                    await _reply(seg.text)
 
     async def _run_stream_with_tracking() -> None:
-        import dingtalk_stream
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=SyntaxWarning)
+            import dingtalk_stream
 
         outer = client
 
