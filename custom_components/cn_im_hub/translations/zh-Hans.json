@@ -86,9 +86,21 @@
         "reconfigure": "飞书设置"
       },
       "step": {
+        "user": {
+          "title": "添加飞书",
+          "description": "请用手机飞书扫描下方二维码，在页面中确认创建应用，完成后点击「扫码绑定」继续；若已有应用或无法扫码，选择「手动填写凭据」。\n\n{qr_markdown}\n\n二维码链接：{qr_url}",
+          "menu_options": {
+            "qr": "扫码绑定（推荐）",
+            "manual": "手动填写凭据"
+          }
+        },
+        "qr_wait": {
+          "title": "等待飞书授权确认",
+          "description": "扫码并确认后，回到此处点击提交。\n\n{qr_markdown}\n\n二维码链接：{qr_url}"
+        },
         "set_options": {
           "title": "添加飞书",
-          "description": "请前往 飞书开放平台 创建应用，获取 App ID 和 App Secret。\n\n输入之后点击提交，请主动在通道端打招呼。",
+          "description": "手动模式：请前往 飞书开放平台 创建应用，获取 App ID 和 App Secret。\n\n输入之后点击提交，请主动在通道端打招呼。",
           "data": {
             "app_id": "App ID",
             "app_secret": "App Secret",
@@ -102,7 +114,11 @@
         "max_instances_reached": "已达到最大实例数限制（3个）。"
       },
       "error": {
-        "cannot_connect": "飞书配置验证失败。"
+        "cannot_connect": "飞书配置验证失败。",
+        "auth_not_confirmed": "尚未检测到授权确认，请完成扫码后再点击提交。",
+        "qr_expired": "二维码已过期，已为你刷新，请重新扫码。",
+        "auth_denied": "授权被拒绝，已重新发起，请重新扫码确认。",
+        "registration_failed": "创建应用失败，已重新发起；若持续失败请改用手动输入。"
       },
       "entry_type": "飞书通道"
     },
@@ -112,9 +128,21 @@
         "reconfigure": "企微设置"
       },
       "step": {
+        "user": {
+          "title": "添加企业微信",
+          "description": "请用手机企业微信扫描下方二维码并确认，完成后点击「扫码绑定」继续；若已有机器人或无法扫码，选择「手动填写凭据」。\n\n{qr_markdown}\n\n二维码链接：{qr_url}",
+          "menu_options": {
+            "qr": "扫码绑定（推荐）",
+            "manual": "手动填写凭据"
+          }
+        },
+        "qr_wait": {
+          "title": "等待企业微信扫码确认",
+          "description": "扫码并确认后，回到此处点击提交。\n\n{qr_markdown}\n\n二维码链接：{qr_url}"
+        },
         "set_options": {
           "title": "添加企微",
-          "description": "请前往 企业微信管理后台 创建应用，获取 Bot ID 和 Secret。\n\n输入之后点击提交，请主动在通道端打招呼。",
+          "description": "手动模式：请前往 企业微信管理后台 创建应用，获取 Bot ID 和 Secret。\n\n输入之后点击提交，请主动在通道端打招呼。",
           "data": {
             "bot_id": "Bot ID",
             "secret": "Secret",
@@ -128,7 +156,10 @@
         "max_instances_reached": "已达到最大实例数限制（3个）。"
       },
       "error": {
-        "cannot_connect": "企微配置验证失败。"
+        "cannot_connect": "企微配置验证失败。",
+        "auth_not_confirmed": "尚未检测到扫码确认，请完成扫码后再点击提交。",
+        "qr_expired": "二维码已过期，已为你刷新，请重新扫码。",
+        "registration_failed": "获取二维码失败，请重试或改用手动输入。"
       },
       "entry_type": "企业微信通道"
     },
@@ -164,9 +195,21 @@
         "reconfigure": "钉钉设置"
       },
       "step": {
+        "user": {
+          "title": "添加钉钉",
+          "description": "请用手机钉钉扫描下方二维码，按页面提示一键创建机器人，完成后点击「扫码绑定」继续；若已有应用或无法扫码，选择「手动填写凭据」。\n\n{qr_markdown}\n\n二维码链接：{qr_url}",
+          "menu_options": {
+            "qr": "扫码绑定（推荐）",
+            "manual": "手动填写凭据"
+          }
+        },
+        "qr_wait": {
+          "title": "等待钉钉扫码确认",
+          "description": "扫码并确认后，回到此处点击提交。\n\n{qr_markdown}\n\n二维码链接：{qr_url}"
+        },
         "set_options": {
           "title": "添加钉钉",
-          "description": "请前往 钉钉开放平台 创建应用，获取 Client ID 和 Client Secret。\n\n输入之后点击提交，请主动在通道端打招呼。",
+          "description": "手动模式：请前往 钉钉开放平台 创建应用，获取 Client ID 和 Client Secret。\n\n输入之后点击提交，请主动在通道端打招呼。",
           "data": {
             "dingtalk_client_id": "Client ID",
             "dingtalk_client_secret": "Client Secret",
@@ -180,7 +223,11 @@
         "max_instances_reached": "已达到最大实例数限制（3个）。"
       },
       "error": {
-        "cannot_connect": "钉钉配置验证失败。"
+        "cannot_connect": "钉钉配置验证失败。",
+        "auth_not_confirmed": "尚未检测到扫码确认，请完成扫码后再点击提交。",
+        "qr_expired": "二维码已过期，已为你刷新，请重新扫码。",
+        "auth_denied": "授权未完成或被拒绝，已刷新二维码，请重新扫码。",
+        "registration_failed": "创建机器人失败，已重新发起；若持续失败请改用手动输入。"
       },
       "entry_type": "钉钉通道"
     },

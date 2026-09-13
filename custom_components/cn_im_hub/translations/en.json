@@ -86,9 +86,21 @@
         "reconfigure": "Feishu Settings"
       },
       "step": {
+        "user": {
+          "title": "Add Feishu",
+          "description": "Scan the QR below with the Feishu mobile app and confirm the app creation, then click Scan to Bind. Choose Manual if you already have an app or cannot scan.\n\n{qr_markdown}\n\nQR URL: {qr_url}",
+          "menu_options": {
+            "qr": "Scan to Bind (recommended)",
+            "manual": "Enter credentials manually"
+          }
+        },
+        "qr_wait": {
+          "title": "Waiting for Feishu Authorization",
+          "description": "扫码并确认后，回到此处点击提交。\n\n{qr_markdown}\n\n二维码链接：{qr_url}"
+        },
         "set_options": {
           "title": "Add Feishu",
-          "description": "Go to Feishu Open Platform to create an app and get App ID and App Secret.\n\nAfter entering, click Submit and say hello in the channel.",
+          "description": "Manual mode: create an app on the Feishu Open Platform and get the App ID and App Secret.\n\nAfter entering, click Submit and say hello in the channel.",
           "data": {
             "app_id": "App ID",
             "app_secret": "App Secret",
@@ -102,7 +114,11 @@
         "max_instances_reached": "Maximum instances reached (3)."
       },
       "error": {
-        "cannot_connect": "Failed to validate Feishu config."
+        "cannot_connect": "Failed to validate Feishu config.",
+        "auth_not_confirmed": "No authorization detected yet. Finish the scan, then click Submit.",
+        "qr_expired": "The QR code expired. A fresh one is shown, please scan again.",
+        "auth_denied": "Authorization was rejected. Restarted, please scan and confirm again.",
+        "registration_failed": "App creation failed and was restarted. If it keeps failing, switch to manual input."
       },
       "entry_type": "Feishu Channel"
     },
@@ -112,9 +128,21 @@
         "reconfigure": "WeCom Settings"
       },
       "step": {
+        "user": {
+          "title": "Add WeCom",
+          "description": "Scan the QR below with the WeCom mobile app and confirm, then click Scan to Bind. Choose Manual if you already have a bot or cannot scan.\n\n{qr_markdown}\n\nQR URL: {qr_url}",
+          "menu_options": {
+            "qr": "Scan to Bind (recommended)",
+            "manual": "Enter credentials manually"
+          }
+        },
+        "qr_wait": {
+          "title": "Waiting for WeCom Scan",
+          "description": "扫码并确认后，回到此处点击提交。\n\n{qr_markdown}\n\n二维码链接：{qr_url}"
+        },
         "set_options": {
           "title": "Add WeCom",
-          "description": "Go to WeCom Admin Console to create an app and get Bot ID and Secret.\n\nAfter entering, click Submit and say hello in the channel.",
+          "description": "Manual mode: create a bot in the WeCom admin console and get the Bot ID and Secret.\n\nAfter entering, click Submit and say hello in the channel.",
           "data": {
             "bot_id": "Bot ID",
             "secret": "Secret",
@@ -128,7 +156,10 @@
         "max_instances_reached": "Maximum instances reached (3)."
       },
       "error": {
-        "cannot_connect": "Failed to validate WeCom config."
+        "cannot_connect": "Failed to validate WeCom config.",
+        "auth_not_confirmed": "No scan detected yet. Finish the scan, then click Submit.",
+        "qr_expired": "The QR code expired. A fresh one is shown, please scan again.",
+        "registration_failed": "Failed to fetch the QR code. Try again or switch to manual input."
       },
       "entry_type": "WeCom Channel"
     },
@@ -164,9 +195,21 @@
         "reconfigure": "DingTalk Settings"
       },
       "step": {
+        "user": {
+          "title": "Add DingTalk",
+          "description": "Scan the QR below with the DingTalk mobile app and follow the page to create the bot, then click Scan to Bind. Choose Manual if you already have an app or cannot scan.\n\n{qr_markdown}\n\nQR URL: {qr_url}",
+          "menu_options": {
+            "qr": "Scan to Bind (recommended)",
+            "manual": "Enter credentials manually"
+          }
+        },
+        "qr_wait": {
+          "title": "Waiting for DingTalk Scan",
+          "description": "扫码并确认后，回到此处点击提交。\n\n{qr_markdown}\n\n二维码链接：{qr_url}"
+        },
         "set_options": {
           "title": "Add DingTalk",
-          "description": "Go to DingTalk Open Platform to create an app and get Client ID and Client Secret.\n\nAfter entering, click Submit and say hello in the channel.",
+          "description": "Manual mode: create an app on the DingTalk Open Platform and get the Client ID and Client Secret.\n\nAfter entering, click Submit and say hello in the channel.",
           "data": {
             "dingtalk_client_id": "Client ID",
             "dingtalk_client_secret": "Client Secret",
@@ -180,7 +223,11 @@
         "max_instances_reached": "Maximum instances reached (3)."
       },
       "error": {
-        "cannot_connect": "Failed to validate DingTalk config."
+        "cannot_connect": "Failed to validate DingTalk config.",
+        "auth_not_confirmed": "No scan detected yet. Finish the scan, then click Submit.",
+        "qr_expired": "The QR code expired. A fresh one is shown, please scan again.",
+        "auth_denied": "Authorization was not completed. A fresh QR is shown, please scan again.",
+        "registration_failed": "Bot creation failed and was restarted. If it keeps failing, switch to manual input."
       },
       "entry_type": "DingTalk Channel"
     },

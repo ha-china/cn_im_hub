@@ -33,6 +33,7 @@ from .prompt import build_feishu_prompt
 from ...models import ProviderRuntime
 from ..base import ProviderSpec
 from .api import FeishuApiClient
+from .flow import FeishuProviderSubentryFlow
 from .ws import FeishuWsClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -348,5 +349,6 @@ PROVIDER_SPEC = ProviderSpec(
     schema_builder=_build_schema,
     validate_config=async_validate_config,
     setup_provider=async_setup_provider,
+    flow_handler=FeishuProviderSubentryFlow,
     allow_multiple=True,
 )
