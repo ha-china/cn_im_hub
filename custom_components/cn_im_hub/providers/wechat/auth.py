@@ -268,6 +268,14 @@ async def async_send_weixin_text(
 
 
 def _encrypt_aes_ecb(plaintext: bytes, key: bytes) -> bytes:
+    """Encrypt with AES-128-ECB + PKCS7, as mandated by the Weixin ilink CDN.
+
+    ECB is a protocol requirement here, not a design choice: the Weixin media
+    gateway only accepts/downloads AES-128-ECB ciphertext. The key is freshly
+    generated per message (see _async_upload_to_wechat_cdn / the inbound
+    per-message aes_key), so no long-term key or structured data is exposed.
+    Mirrors upstream openclaw-weixin src/cdn/aes-ecb.ts.
+    """
     padder = padding.PKCS7(128).padder()
     padded = padder.update(plaintext) + padder.finalize()
     cipher = Cipher(algorithms.AES(key), modes.ECB())
@@ -276,6 +284,7 @@ def _encrypt_aes_ecb(plaintext: bytes, key: bytes) -> bytes:
 
 
 def _decrypt_aes_ecb(ciphertext: bytes, key: bytes) -> bytes:
+    """Decrypt AES-128-ECB + PKCS7 (Weixin ilink CDN protocol requirement)."""
     cipher = Cipher(algorithms.AES(key), modes.ECB())
     decryptor = cipher.decryptor()
     padded = decryptor.update(ciphertext) + decryptor.finalize()
