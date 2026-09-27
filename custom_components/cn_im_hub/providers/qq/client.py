@@ -58,7 +58,6 @@ _API_BASE = QQ_API_BASE
 _INTENTS = (1 << 30) | (1 << 12) | (1 << 25)
 _STORE_VERSION = 1
 _TYPING_INPUT_SECOND = 60
-_TYPING_INTERVAL_SECONDS = 50
 _MAX_REFERENCE_MESSAGES = 40
 _DIRECT_UPLOAD_MAX_BYTES = 8 * 1024 * 1024
 _TEXT_FILE_EXTENSIONS = {
@@ -1805,70 +1804,6 @@ class QQClient:
             if resp.status >= 400:
                 raise RuntimeError(f"QQ {media_kind} send failed: {resp.status} {await resp.text()}")
 
-    async def _send_media_url_message(
-        self,
-        target: str,
-        media_url: str,
-        *,
-        media_kind: str,
-        target_type: str,
-        reply_to_message_id: str | None,
-        file_name: str | None = None,
-    ) -> None:
-        file_type_map = {"image": 1, "video": 2, "voice": 3, "file": 4}
-        file_type = file_type_map.get(media_kind)
-        if file_type is None:
-            raise ValueError(f"Unsupported QQ media kind: {media_kind}")
-
-        token = await self._get_token()
-        kind = target_type.strip().lower() if target_type else _split_target(target)[0]
-        ident = target.strip()
-        if ":" in ident:
-            kind, ident = _split_target(ident)
-        if kind not in ("user", "group"):
-            raise ValueError(f"QQ {media_kind} sending only supports user and group targets")
-
-        if kind == "user":
-            upload_path = f"/v2/users/{ident}/files"
-            send_path = f"/v2/users/{ident}/messages"
-        else:
-            upload_path = f"/v2/groups/{ident}/files"
-            send_path = f"/v2/groups/{ident}/messages"
-
-        upload_body: dict[str, Any] = {
-            "file_type": file_type,
-            "srv_send_msg": False,
-            "url": media_url,
-        }
-        if file_name:
-            upload_body["file_name"] = file_name
-
-        async with self._session.post(
-            f"{_API_BASE}{upload_path}",
-            headers={"Authorization": f"QQBot {token}"},
-            json=upload_body,
-            timeout=60,
-        ) as resp:
-            data = await resp.json(content_type=None)
-            if resp.status >= 400:
-                raise RuntimeError(f"QQ {media_kind} URL upload failed: {resp.status} {data}")
-        file_info = str(data.get("file_info") or "")
-        if not file_info:
-            raise RuntimeError(f"QQ {media_kind} URL upload missing file_info: {data}")
-
-        body: dict[str, Any] = {"msg_type": 7, "media": {"file_info": file_info}}
-        if reply_to_message_id:
-            body["msg_id"] = reply_to_message_id
-            body["msg_seq"] = self._next_msg_seq(reply_to_message_id)
-        async with self._session.post(
-            f"{_API_BASE}{send_path}",
-            headers={"Authorization": f"QQBot {token}"},
-            json=body,
-            timeout=60,
-        ) as resp:
-            if resp.status >= 400:
-                raise RuntimeError(f"QQ {media_kind} URL send failed: {resp.status} {await resp.text()}")
-
     async def _upload_media(
         self,
         token: str,
@@ -2003,14 +1938,6 @@ class QQClient:
             data = await self._hass.async_add_executor_job(local_path.read_bytes)
             return data, local_path.name or default_name
         raise ValueError(f"Media source not found: {candidate}")
-
-    async def _typing_keepalive(self, user_openid: str, message_id: str) -> None:
-        with contextlib.suppress(Exception):
-            await self._send_typing_notify(user_openid, message_id)
-        while True:
-            await asyncio.sleep(_TYPING_INTERVAL_SECONDS)
-            with contextlib.suppress(Exception):
-                await self._send_typing_notify(user_openid, message_id)
 
     async def _send_typing_notify(self, user_openid: str, message_id: str) -> None:
         token = await self._get_token()

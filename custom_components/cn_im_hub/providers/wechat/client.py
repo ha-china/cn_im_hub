@@ -57,7 +57,6 @@ from .auth import (
     async_send_weixin_image,
     async_send_weixin_text,
     async_send_weixin_video,
-    async_send_weixin_voice,
     extract_inbound_media,
     extract_text_body,
 )
@@ -74,44 +73,6 @@ _FILE_TEXT_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".xml", ".yaml", ".yml"
 _GIF_COMPRESS_THRESHOLD_BYTES = 2 * 1024 * 1024
 _GIF_MAX_DIMENSION = 360
 _REMOTE_STREAM_SUFFIXES = (".m3u8", ".m3u", ".mpd", ".ts")
-_SILK_SAMPLE_RATE = 16000
-
-
-def _mp3_to_silk(mp3_bytes: bytes) -> tuple[bytes, int]:
-    """Convert MP3 bytes to SILK format. Returns (silk_bytes, duration_ms)."""
-    import os
-    import subprocess
-    import tempfile
-    import pilk
-
-    mp3_fd, mp3_path = tempfile.mkstemp(suffix=".mp3")
-    pcm_fd, pcm_path = tempfile.mkstemp(suffix=".pcm")
-    silk_fd, silk_path = tempfile.mkstemp(suffix=".silk")
-    os.close(mp3_fd)
-    os.close(pcm_fd)
-    os.close(silk_fd)
-    try:
-        with open(mp3_path, "wb") as f:
-            f.write(mp3_bytes)
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", mp3_path,
-                "-f", "s16le", "-acodec", "pcm_s16le",
-                "-ar", str(_SILK_SAMPLE_RATE), "-ac", "1",
-                pcm_path,
-            ],
-            check=True,
-            capture_output=True,
-        )
-        pilk.encode(pcm_path, silk_path, pcm_rate=_SILK_SAMPLE_RATE, silk_rate=_SILK_SAMPLE_RATE)
-        duration_ms = pilk.get_duration(silk_path)
-        with open(silk_path, "rb") as f:
-            silk_bytes = f.read()
-        return silk_bytes, duration_ms
-    finally:
-        for p in (mp3_path, pcm_path, silk_path):
-            with contextlib.suppress(OSError):
-                os.unlink(p)
 
 
 def _compress_image(raw: bytes, max_dim: int = 640, target_kb: int = 60) -> bytes:

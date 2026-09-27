@@ -590,53 +590,6 @@ async def async_send_weixin_file(
     )
 
 
-async def async_send_weixin_voice(
-    hass: HomeAssistant,
-    *,
-    base_url: str,
-    token: str,
-    to_user_id: str,
-    context_token: str,
-    silk_bytes: bytes,
-    duration_ms: int,
-) -> str:
-    """Send a voice message (SILK format)."""
-    if not silk_bytes:
-        raise ValueError("Weixin voice data is empty")
-    session = async_get_clientsession(hass)
-    uploaded = await _async_upload_to_wechat_cdn(
-        session,
-        base_url=base_url,
-        token=token,
-        to_user_id=to_user_id,
-        media_bytes=silk_bytes,
-        media_type=4,
-    )
-    cdn_media = _build_cdn_media(uploaded)
-    cdn_media["full_url"] = (
-        f"{_WECHAT_CDN_BASE_URL}/download"
-        f"?encrypted_query_param={quote(uploaded.encrypt_query_param, safe='')}"
-    )
-    item = {
-        "type": 3,
-        "voice_item": {
-            "media": cdn_media,
-            "encode_type": 6,
-            "bits_per_sample": 16,
-            "sample_rate": 16000,
-            "playtime": duration_ms,
-        },
-    }
-    return await _async_send_message_with_item(
-        session,
-        base_url=base_url,
-        token=token,
-        to_user_id=to_user_id,
-        context_token=context_token,
-        item=item,
-    )
-
-
 async def async_get_typing_ticket(
     hass: HomeAssistant,
     *,
