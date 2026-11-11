@@ -28,18 +28,29 @@ async def _get_preferred_agent_id(hass) -> str:
 
 
 def _normalize_agent_id_for_storage(hass, agent_id: str) -> str:
-    candidate = agent_id.strip()
-    entity = er.async_get(hass).async_get(candidate) if candidate.startswith("conversation.") else None
-    return (
-        candidate
-        if not candidate or candidate == "conversation.home_assistant"
-        else entity.config_entry_id if entity and entity.config_entry_id
-        else candidate
-    )
+    """Store the agent id exactly as chosen.
+
+    HA's conversation layer accepts both forms natively: entity ids (containing
+    ".") resolve through the entity component, while bare config entry ids and
+    the built-in "conversation.home_assistant" resolve through the agent
+    manager (see homeassistant/components/conversation/agent_manager.py
+    async_get_agent). Converting an entity id to its config entry id is lossy:
+    when one config entry exposes several conversation entities, the reverse
+    lookup cannot tell them apart and silently falls back to the first one.
+    """
+    return agent_id.strip()
 
 
 def _resolve_agent_id_for_selector(hass, agent_id: str) -> str:
+    """Resolve a stored agent id for display in the selector.
+
+    Values already stored as entity ids (or the built-in agent) are passed
+    through untouched. Bare config entry ids (older storage format) are mapped
+    back to an entity id so the selector can show a matching entry.
+    """
     candidate = agent_id.strip()
+    if not candidate or candidate == "conversation.home_assistant" or candidate.startswith("conversation."):
+        return candidate
     match = next(
         (
             entry.entity_id
@@ -48,7 +59,7 @@ def _resolve_agent_id_for_selector(hass, agent_id: str) -> str:
         ),
         "",
     )
-    return candidate if not candidate or candidate == "conversation.home_assistant" or candidate.startswith("conversation.") else match or candidate
+    return match or candidate
 
 
 def _agent_selector(hass) -> selector.ConversationAgentSelector:

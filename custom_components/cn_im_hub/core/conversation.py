@@ -115,18 +115,27 @@ async def ask_home_assistant(
 
 
 def _normalize_agent_id_for_runtime(hass: HomeAssistant, agent_id: str) -> str:
+    """Return the agent id to hand to HA's conversation API.
+
+    Modern conversation integrations register a ConversationEntity, whose id
+    in `conversation/agent/list` is its entity id; legacy agents use their
+    config entry id. HA's async_get_agent resolves entity ids through the
+    entity component ("." present) and bare config entry ids through the agent
+    manager — but a ConversationEntity integration is NOT registered with the
+    agent manager, so a bare id would fail to resolve there.
+
+    Entity ids are therefore passed through untouched (exact match), while a
+    bare config entry id — only produced by older versions of this component —
+    is mapped back to one of its conversation entities so existing
+    installations keep working. Re-selecting the agent in the UI upgrades the
+    stored value to the exact entity id.
+    """
     candidate = agent_id.strip()
-    if not candidate or candidate == "conversation.home_assistant":
+    if not candidate or candidate == "conversation.home_assistant" or candidate.startswith("conversation."):
         return candidate
 
-    if candidate.startswith("conversation."):
-        return candidate
-
-    entity_registry = er.async_get(hass)
-    for entry in entity_registry.entities.values():
-        if entry.domain != "conversation":
-            continue
-        if entry.config_entry_id == candidate:
+    for entry in er.async_get(hass).entities.values():
+        if entry.domain == "conversation" and entry.config_entry_id == candidate:
             return entry.entity_id
 
     return candidate
