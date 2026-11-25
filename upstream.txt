@@ -7,7 +7,7 @@ Feishu
 - URL: https://open.feishu.cn/
 - npm: https://www.npmjs.com/package/@larksuiteoapi/feishu-openclaw-plugin
 - npm latest: 2026.3.8
-- Last checked: 2026-09-13
+- Last checked: 2026-11-25
 - Notes: npm package unchanged since 2026.3.8; its onboarding CLI still asks
   for manual appId/appSecret. The platform "one-click app creation" (扫码一键
   创建飞书智能体应用) is exposed via the official Python SDK lark-oapi >= 1.5.5:
@@ -25,11 +25,18 @@ WeCom
 - URL: https://developer.work.weixin.qq.com/
 - Source package: @wecom/wecom-openclaw-plugin
 - npm: https://www.npmjs.com/package/@wecom/wecom-openclaw-plugin
-- npm latest: 2026.8.17
+- npm latest: 2026.10.30
 - Source package: @wecom/wecom-openclaw-cli
 - npm: https://www.npmjs.com/package/@wecom/wecom-openclaw-cli
 - npm latest (cli): 1.1.1
-- Notes: Official plugin supports Bot mode, Agent mode, interactive onboarding, multi-account routing, Agent/Bot webhook entrypoints, and Bot WebSocket to Agent HTTP fallback. Since 2026.8.17 the plugin replaced the `wecom_mcp` tool with a `wecom-cli` tool and rewritten `wecomcli-*` skills; core aibot WebSocket protocol commands are unchanged. No new release since the 2026-08-24 check.
+- Notes: Official plugin supports Bot mode, Agent mode, interactive onboarding, multi-account routing, Agent/Bot webhook entrypoints, and Bot WebSocket to Agent HTTP fallback. Since 2026.8.17 the plugin replaced the `wecom_mcp` tool with a `wecom-cli` tool and rewritten `wecomcli-*` skills; core aibot WebSocket protocol commands are unchanged.
+- 2026-11-25 check: 2026.9.15 / 2026.10.19 / 2026.10.26 / 2026.10.30 diffs are all
+  OpenClaw host-coupling: `openclaw-compat.js` mutateRuntimeConfig/readRuntimeConfig
+  (host config snapshot API migration), `channel.js` clearAccountCredentials via the
+  new transactional config API, `cli/tool.js` readCurrentConfig, `@wecom/cli` dep
+  bump ^1.0.0 -> ^1.3.4 (doc/sheet skills). aibot WebSocket protocol files
+  (state-manager / http / message-sender / media-* / webhook / chat-queue) are
+  byte-identical. Nothing to adopt for our Python integration.
 - QR binding: wecom-openclaw-cli 1.1.1 dist/utils/qrcode.js implements
   scan-to-bind against the admin-side service:
   GET https://work.weixin.qq.com/ai/qc/generate?source=...&plat={1 darwin|2 win32|3 linux}
@@ -38,7 +45,7 @@ WeCom
   GET https://work.weixin.qq.com/ai/qc/query_result?scode=... (CLI polls 3s,
     5min TTL) -> {data:{status:"success", bot_info:{botid, secret}}}.
   Adopted in providers/wecom/auth.py + flow.py (poll once per submit).
-- Last checked: 2026-09-13
+- Last checked: 2026-11-25
 
 QQ
 - Source: Hello Claw / OpenClaw QQ bot flow
@@ -49,19 +56,28 @@ QQ
   q.qq.com; src/onboarding.ts prompts for AppID + ClientSecret). The
   q.qq.com/qqbot/openclaw/login.html page is a web-only quick-register SPA
   with no device API, so no scan-to-bind integration is possible yet.
-- Last checked: 2026-09-13
+- Last checked: 2026-11-25
 
 DingTalk
 - Source: DingTalk OpenClaw access docs
 - URL: https://open.dingtalk.com/document/dingstart/build-dingtalk-ai-employees
 - npm: https://www.npmjs.com/package/@dingtalk-real-ai/dingtalk-connector
-- npm latest: 0.8.26
+- npm latest: 0.8.27
 - Notes: 0.8.26 (2026-09-03) is entirely host/plugin-side: segmented plugin
   SDK entry points, host config snapshots, host-owned session queue and
   interrupt semantics, Channel Secret Contract, agent routing via the host;
   requires OpenClaw >= 2026.8.1. Only DingTalk-side change is a robustness
   guard for empty image-upload responses. No websocket/AI Card/message
   protocol changes - nothing to adopt for our Python integration.
+- 2026-11-25 check: 0.8.27 (2026-10-20) = PR #673 community capability
+  alignment (quote-message restore, optional v2 structured streaming AI
+  cards, dingtalk_ask_user_question forms, @multi-assistant routing, /btw)
+  and PR #678 stale-WebSocket-close fix. #678: the connector's own close
+  listener now ignores close events from a replaced socket and re-checks
+  connection identity before running a queued reconnect. Our client uses
+  the official dingtalk-stream SDK start_forever without custom close
+  listeners, so the bug class does not exist here. #673 items are OpenClaw
+  host features (plugin-sdk imports, card bridge) - not portable.
 - QR binding: 0.8.26 src/device-auth.ts implements one-click bot creation:
   POST https://oapi.dingtalk.com/app/registration/init {source:"DING_DWS_CLAW"}
     -> {errcode:0, nonce}
@@ -73,14 +89,14 @@ DingTalk
   Scan with the DingTalk app; SUCCESS returns the same client_id/secret the
   manual path stores. Adopted in providers/dingtalk/auth.py + flow.py
   (poll once per submit).
-- Last checked: 2026-09-13
+- Last checked: 2026-11-25
 
 WeChat
 - Source package: @tencent-weixin/openclaw-weixin
 - npm: https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin
 - Source package: @tencent-weixin/openclaw-weixin-cli
 - npm: https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin-cli
-- npm latest: 2.4.8
+- npm latest: 2.4.10
 - npm latest (cli): 2.1.4
 - Local reference: .tmp_cli_ref/weixin-plugin-2.0.1/package/ and .tmp_cli_ref/package/
 - Notes: 2.4.6 -> 2.4.8 diff is a single plugin-SDK import path change
@@ -88,8 +104,29 @@ WeChat
   qrcode-terminal dep for its QR login; dist/src/auth/login-qr.js is
   byte-identical to what we already ported (our auth.py implements
   get_bot_qrcode/get_qrcode_status incl. verify code, IDC redirect,
-  binded_redirect). 2.4.9-beta.0 exists. Nothing to adopt.
-- Last checked: 2026-09-13
+  binded_redirect). 2.4.9-beta.0 exists.
+- 2026-11-25 check:
+  - 2.4.9 / 2.4.10: host-coupling only (OpenClaw 2026.9/2026.10 plugin-SDK
+    compat, pairing-file writer removal). One JS-specific fix in api.js:
+    parseWeixinApiJson quotes uint64 id fields (message_id/msg_id/svr_id)
+    before JSON.parse to avoid Number precision loss - Python json.loads
+    handles big ints natively, so not applicable to us.
+  - 2.4.9-beta.0 quote restore: inbound quotes may carry only svr_id; a
+    per-account SQLite sidecar restores them. We still do NOT render
+    item.ref_msg at all (gap vs 2.4.8 stable which already inlined
+    "[引用: title | body]" and downloaded quoted media as attachment).
+  - 3.0.0-beta-0/-1 (2026-11): opt-in inbound debounce/merge (#359), atomic
+    cursor+message persistence with restart recovery (we save the cursor
+    before processing, so an in-flight batch can be lost on restart),
+    quoted-media failure isolation, media download idleTimeoutMs=30s (we
+    use a fixed 120s total cap - safe), errorNotices default off,
+    owner-based allowFrom via from_user_id (host concept), optional
+    verify_pin via bot_spam_business_data base64, and optional real-name
+    ticket flow for binding someone else's bot (get_auth_url ->
+    weixin110.qq.com botrealnameverifycgi -> query_auth_result; ticket
+    passed to get_bot_qrcode). Default path (own bot, no ticket, no
+    business data) matches our current implementation.
+- Last checked: 2026-11-25
 
 XiaoYi
 - Source package: @ynhcj/xiaoyi
@@ -101,4 +138,4 @@ XiaoYi
   - https://developer.huawei.com/consumer/cn/doc/service/openclaw-0000002518410344
 - Notes: AK/SK authentication only (Huawei developer console); no QR/device
   onboarding in the 2.5.7 package.
-- Last checked: 2026-09-13
+- Last checked: 2026-11-25

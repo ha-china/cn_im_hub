@@ -679,24 +679,85 @@ async def async_notify_stop(
     )
 
 
-def extract_text_body(message: dict[str, Any]) -> str:
-    item_list = message.get("item_list") or []
-    if not isinstance(item_list, list):
-        return ""
+def _media_type_label(itype: Any, item: dict[str, Any]) -> str:
+    """Render a non-text item as a short label (upstream MEDIA_LABELS + file name)."""
+    if itype == 4:
+        file_name = str((item.get("file_item") or {}).get("file_name") or "")
+        return f"[文件 {file_name}]" if file_name else "[文件]"
+    return {2: "[图片]", 3: "[语音]", 5: "[视频]"}.get(itype if isinstance(itype, int) else -1, "")
+
+
+def _body_from_item_list(item_list: list[Any]) -> str:
+    """Extract the agent-facing text body from a Weixin item list.
+
+    Mirrors upstream openclaw-weixin 2.4.8 bodyFromItemList: a text item that
+    quotes another message (``ref_msg``) inlines the quote as
+    ``[引用: title | quoted body]`` above the new text. Deviation: content this
+    integration cannot forward as an attachment (voice/video, or an image/file
+    without downloadable CDN fields) is rendered inline as transcription or a
+    label instead of being dropped silently.
+    """
     for item in item_list:
         if not isinstance(item, dict):
             continue
-        if item.get("type") == 1:
+        itype = item.get("type")
+        if itype == 1:
             text_item = item.get("text_item") or {}
             text = text_item.get("text")
-            if isinstance(text, str) and text.strip():
+            if not isinstance(text, str):
+                continue
+            ref = item.get("ref_msg")
+            if not isinstance(ref, dict):
                 return text.strip()
-        if item.get("type") == 3:
+            ref_item = ref.get("message_item")
+            ref_item = ref_item if isinstance(ref_item, dict) else None
+            ref_itype = ref_item.get("type") if ref_item else None
+            if ref_item is not None and ref_itype in (2, 4):
+                if _inbound_media_from_item(ref_item) is not None:
+                    # Quoted image/file will be attached by
+                    # extract_inbound_media; upstream passes the caption only.
+                    return text.strip()
+                # Not downloadable: render a label instead of dropping the
+                # quote entirely.
+                parts: list[str] = []
+                title = str(ref.get("title") or "").strip()
+                if title:
+                    parts.append(title)
+                parts.append(_media_type_label(ref_itype, ref_item) or "[引用消息]")
+                return f"[引用: {' | '.join(parts)}]\n{text.strip()}"
+            parts = []
+            title = str(ref.get("title") or "").strip()
+            if title:
+                parts.append(title)
+            if ref_item is not None:
+                if ref_itype == 3:
+                    # Quoted voice: use its transcription when present.
+                    ref_text = (ref_item.get("voice_item") or {}).get("text")
+                    parts.append(str(ref_text).strip() if isinstance(ref_text, str) and ref_text.strip() else "[语音]")
+                elif ref_itype == 5:
+                    parts.append("[视频]")
+                else:
+                    ref_body = _body_from_item_list([ref_item])
+                    if ref_body:
+                        parts.append(ref_body)
+                    elif (label := _media_type_label(ref_itype, ref_item)):
+                        parts.append(label)
+            if not parts:
+                return text.strip()
+            return f"[引用: {' | '.join(parts)}]\n{text.strip()}"
+        if itype == 3:
             voice_item = item.get("voice_item") or {}
             text = voice_item.get("text")
             if isinstance(text, str) and text.strip():
                 return text.strip()
     return ""
+
+
+def extract_text_body(message: dict[str, Any]) -> str:
+    item_list = message.get("item_list") or []
+    if not isinstance(item_list, list):
+        return ""
+    return _body_from_item_list(item_list)
 
 
 @dataclass(slots=True)
@@ -709,31 +770,59 @@ class InboundMedia:
     aeskey_hex: str
 
 
+def _inbound_media_from_item(item: dict[str, Any]) -> InboundMedia | None:
+    """Extract image/file media fields from a single message item."""
+    itype = item.get("type")
+    if itype == 2:
+        img = item.get("image_item") or {}
+        media = img.get("media") or {}
+        eqp = media.get("encrypt_query_param") or ""
+        aes_key = media.get("aes_key") or ""
+        full_url = media.get("full_url") or ""
+        aeskey_hex = img.get("aeskey") or ""
+        if eqp or full_url:
+            return InboundMedia("image", eqp, aes_key, full_url, "", aeskey_hex)
+    if itype == 4:
+        fi = item.get("file_item") or {}
+        media = fi.get("media") or {}
+        eqp = media.get("encrypt_query_param") or ""
+        aes_key = media.get("aes_key") or ""
+        full_url = media.get("full_url") or ""
+        fname = fi.get("file_name") or ""
+        if eqp or full_url:
+            return InboundMedia("file", eqp, aes_key, full_url, fname, "")
+    return None
+
+
 def extract_inbound_media(message: dict[str, Any]) -> InboundMedia | None:
+    """Return the downloadable image/file media of an inbound message.
+
+    Mirrors upstream openclaw-weixin 2.4.8 process-message: main media takes
+    priority (image before file); when the message has no main media, the
+    media quoted on a text item's ``ref_msg`` is downloaded instead, so
+    "quoting an image and asking about it" reaches the agent as an attachment.
+    """
     item_list = message.get("item_list") or []
     if not isinstance(item_list, list):
         return None
     for item in item_list:
-        if not isinstance(item, dict):
+        if isinstance(item, dict) and item.get("type") == 2:
+            media = _inbound_media_from_item(item)
+            if media is not None:
+                return media
+    for item in item_list:
+        if isinstance(item, dict) and item.get("type") == 4:
+            media = _inbound_media_from_item(item)
+            if media is not None:
+                return media
+    for item in item_list:
+        if not isinstance(item, dict) or item.get("type") != 1:
             continue
-        itype = item.get("type")
-        if itype == 2:
-            img = item.get("image_item") or {}
-            media = img.get("media") or {}
-            eqp = media.get("encrypt_query_param") or ""
-            aes_key = media.get("aes_key") or ""
-            full_url = media.get("full_url") or ""
-            aeskey_hex = img.get("aeskey") or ""
-            if eqp or full_url:
-                return InboundMedia("image", eqp, aes_key, full_url, "", aeskey_hex)
-        if itype == 4:
-            fi = item.get("file_item") or {}
-            media = fi.get("media") or {}
-            eqp = media.get("encrypt_query_param") or ""
-            aes_key = media.get("aes_key") or ""
-            full_url = media.get("full_url") or ""
-            fname = fi.get("file_name") or ""
-            return InboundMedia("file", eqp, aes_key, full_url, fname, "")
+        ref = item.get("ref_msg")
+        if isinstance(ref, dict) and isinstance(ref.get("message_item"), dict):
+            media = _inbound_media_from_item(ref["message_item"])
+            if media is not None:
+                return media
     return None
 
 

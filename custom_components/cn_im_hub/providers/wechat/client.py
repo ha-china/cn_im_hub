@@ -213,6 +213,7 @@ class WeixinClient:
         self._context_tokens: dict[str, str] = {}
         self._store: Store[dict[str, Any]] = Store(hass, _STORE_VERSION, f"cn_im_hub_wechat_{subentry_id}")
         self._sync_buf = ""
+        self._pending: list[dict[str, Any]] = []
         self._pause_until = 0.0
         self._tracker = None
         self._typing_tickets: dict[str, tuple[str, float]] = {}
@@ -228,6 +229,20 @@ class WeixinClient:
         tokens = data.get("context_tokens") or {}
         if isinstance(tokens, dict):
             self._context_tokens = {str(key): str(value) for key, value in tokens.items() if value}
+        pending = data.get("pending")
+        if isinstance(pending, list):
+            for entry in pending:
+                if not isinstance(entry, dict) or not isinstance(entry.get("msg"), dict):
+                    continue
+                if entry.get("state") == "running":
+                    # Started before the last restart; upstream semantics:
+                    # interrupted tasks are not re-run (would duplicate replies).
+                    _LOGGER.warning(
+                        "Dropping interrupted Weixin message for account %s (was mid-processing at restart)",
+                        self._account_id,
+                    )
+                    continue
+                self._pending.append({"state": "queued", "msg": entry["msg"]})
         self._stopping = False
         if self._task is None:
             self._task = asyncio.create_task(self._run())
@@ -387,13 +402,18 @@ class WeixinClient:
                 if isinstance(resp.get("longpolling_timeout_ms"), int) and resp["longpolling_timeout_ms"] > 0:
                     next_timeout_ms = int(resp["longpolling_timeout_ms"])
                 new_buf = str(resp.get("get_updates_buf") or "")
-                if new_buf and new_buf != self._sync_buf:
+                buf_changed = bool(new_buf) and new_buf != self._sync_buf
+                if buf_changed:
                     self._sync_buf = new_buf
+                batch = [m for m in (resp.get("msgs") or []) if isinstance(m, dict)]
+                if batch:
+                    self._pending.extend({"state": "queued", "msg": m} for m in batch)
+                # Persist cursor and queued messages in one write so a restart
+                # cannot advance past unprocessed messages.
+                if buf_changed or batch:
                     await self._async_save_state()
-                for message in resp.get("msgs") or []:
-                    if not isinstance(message, dict):
-                        continue
-                    await self._handle_message(message)
+                if batch:
+                    await self._drain_pending()
             except asyncio.CancelledError:
                 raise
             except Exception as err:
@@ -770,8 +790,39 @@ class WeixinClient:
             {
                 "get_updates_buf": self._sync_buf,
                 "context_tokens": self._context_tokens,
+                "pending": self._pending,
             }
         )
+
+    async def _drain_pending(self) -> None:
+        """Process queued inbound messages, persisting progress after each one.
+
+        Mirrors upstream openclaw-weixin 3.0.0-beta-0: raw messages are stored
+        together with the poll cursor atomically, so a restart mid-batch no
+        longer loses the not-yet-processed messages (the cursor used to be
+        saved before processing). Each entry is marked running before
+        processing and removed afterwards; an entry that was mid-processing at
+        restart is dropped by start() instead of being re-run.
+        """
+        while self._pending and not self._stopping:
+            entry = self._pending[0]
+            if entry.get("state") == "running":
+                self._pending.pop(0)
+                await self._async_save_state()
+                continue
+            entry["state"] = "running"
+            await self._async_save_state()
+            try:
+                await self._handle_message(entry["msg"])
+            finally:
+                if self._stopping:
+                    # stop()/restart hit mid-processing: keep the running mark
+                    # so start() logs the interrupted message instead of it
+                    # being silently discarded.
+                    pass
+                elif self._pending and self._pending[0] is entry:
+                    self._pending.pop(0)
+                    await self._async_save_state()
 
     def _pause_session(self) -> None:
         self._pause_until = asyncio.get_running_loop().time() + _SESSION_PAUSE_SECONDS
