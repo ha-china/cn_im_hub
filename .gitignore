@@ -3,3 +3,4 @@
 .tmp_wechat_access_ref/
 __pycache__/
 *.py[cod]
+*.tgz
