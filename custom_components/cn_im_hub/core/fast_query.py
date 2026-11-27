@@ -46,17 +46,17 @@ async def recognize_fast_query(hass: HomeAssistant, text: str) -> FastQuery | No
             return None
         agent = conversation.async_get_agent(hass, "conversation.home_assistant")
         recognize = getattr(agent, "async_recognize_intent", None)
-        recognize_trigger = getattr(agent, "async_recognize_sentence_trigger", None)
-        if not callable(recognize) or not callable(recognize_trigger):
+        # Avoid a trigger-recognition API whose older implementations may
+        # run callbacks. If triggers are configured or the registry layout is
+        # unknown, conservatively use the ordinary conversation lane.
+        trigger_config = getattr(agent, "_trigger_intents_config", None)
+        if not callable(recognize) or not isinstance(trigger_config, dict) or trigger_config.get("intents"):
             return None
         user_input = conversation.ConversationInput(
             text=text, context=Context(), conversation_id=None,
             device_id=None, satellite_id=None, language=hass.config.language,
             agent_id="conversation.home_assistant",
         )
-        # HA 2026.11: recognition only, no trigger callbacks are executed.
-        if await recognize_trigger(user_input):
-            return None
         result = await recognize(user_input, strict_intents_only=True)
         if result is None or result.unmatched_entities:
             return None

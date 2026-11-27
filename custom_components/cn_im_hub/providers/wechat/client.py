@@ -635,7 +635,7 @@ class WeixinClient:
         command = parse_command(text)
         if command is None:
             return
-        resolved_context = self._context_tokens.get(from_user_id)
+        resolved_context = str(message.get("context_token") or "").strip() or self._context_tokens.get(from_user_id)
         if not resolved_context:
             _LOGGER.warning("Weixin context_token missing for user %s", from_user_id)
             return
@@ -913,7 +913,7 @@ class WeixinClient:
 
     async def _run_fast(self, sender: str, entry: dict[str, Any], query: FastQuery) -> None:
         try:
-            token = self._context_tokens.get(sender)
+            token = str(entry["msg"].get("context_token") or "").strip() or self._context_tokens.get(sender)
             if not sender or not token:
                 return
             if self._tracker is not None:
@@ -946,6 +946,7 @@ class WeixinClient:
             await self._dispatch_event.wait()
             self._dispatch_event.clear()
             try:
+                blocked_senders: set[str] = set()
                 for entry in list(self._pending):
                     if self._stopping:
                         return
@@ -953,7 +954,8 @@ class WeixinClient:
                         continue
                     message = entry["msg"]
                     sender = str(message.get("from_user_id") or "").strip()
-                    if sender not in self._normal_tasks and len(self._normal_tasks) < _MAX_NORMAL_TASKS:
+                    if (sender not in blocked_senders and sender not in self._normal_tasks
+                            and len(self._normal_tasks) < _MAX_NORMAL_TASKS):
                         await self._mark_running(entry)
                         self._normal_tasks[sender] = asyncio.create_task(self._run_normal(sender, entry))
                         continue
@@ -962,6 +964,10 @@ class WeixinClient:
                     if query is not None:
                         await self._mark_running(entry)
                         await self._run_fast(sender, entry, query)
+                    else:
+                        # A later normal turn must not leapfrog an earlier queued turn
+                        # if the active task finishes during recognition.
+                        blocked_senders.add(sender)
             except asyncio.CancelledError:
                 raise
             except Exception:
