@@ -287,21 +287,18 @@ class WeixinClient:
 
     async def stop(self) -> None:
         self._stopping = True
-        if self._task is not None:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
-        if self._dispatch_task is not None:
-            self._dispatch_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._dispatch_task
-            self._dispatch_task = None
-        tasks = [*self._normal_tasks.values(), *self._fast_tasks]
+        tasks = [task for task in (self._task, self._dispatch_task,
+                                  *self._normal_tasks.values(), *self._fast_tasks)
+                 if task is not None]
         for task in tasks:
             task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    _LOGGER.warning("Weixin task failed during stop: %s", type(result).__name__)
+        self._task = None
+        self._dispatch_task = None
         self._normal_tasks.clear()
         self._fast_tasks.clear()
         _LOGGER.debug("Weixin dispatcher stopped active_tasks=0")
@@ -1035,6 +1032,8 @@ class WeixinClient:
 
     def _fast_done(self, task: asyncio.Task[None]) -> None:
         self._fast_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            _LOGGER.error("Weixin fast worker failed: %s", type(task.exception()).__name__)
         self._dispatch_event.set()
 
     async def _dispatch_pending(self) -> None:

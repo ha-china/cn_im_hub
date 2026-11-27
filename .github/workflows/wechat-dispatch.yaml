@@ -1,0 +1,29 @@
+name: WeChat dispatch regression
+on:
+  push:
+    paths:
+      - 'custom_components/cn_im_hub/**'
+      - 'tests/test_wechat*.py'
+      - '.github/workflows/wechat-dispatch.yaml'
+  pull_request:
+    paths:
+      - 'custom_components/cn_im_hub/**'
+      - 'tests/test_wechat*.py'
+      - '.github/workflows/wechat-dispatch.yaml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Compile integration
+        run: python -m compileall -q custom_components/cn_im_hub
+      - name: Run dispatch regression
+        run: python -m unittest discover -s tests -p 'test_wechat*.py' -v
