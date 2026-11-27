@@ -404,6 +404,15 @@ class DispatchTest(unittest.IsolatedAsyncioTestCase):
         await self.until(lambda: self.replies == ["config changed"] and not d._pending)
         self.assertEqual(self.started, [])
 
+    async def test_old_protocol_id_does_not_prevent_new_query_classification(self):
+        d = self.d
+        await self.enqueue(msg(1, "fastwater"))
+        await self.until(lambda: self.replies == ["fastwater"] and not d._pending)
+        await self.enqueue(msg(1, "fastwater"), msg(2, "fastwater"), msg(3, "fastwater"))
+        await self.until(lambda: self.replies == ["fastwater", "fastwater"] and not d._pending)
+        self.assertEqual(self.started, [])
+        self.assertIn("a:message_id:3", d._seen)
+
 
 if __name__ == "__main__":
     unittest.main()

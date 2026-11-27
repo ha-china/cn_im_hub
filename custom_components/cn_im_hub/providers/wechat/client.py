@@ -888,10 +888,10 @@ class WeixinClient:
             key = self._query_text_key(message)
             if key is None or key in checked:
                 continue
-            checked.add(key)
             protocol_key = self._message_key(message)
             if protocol_key is not None and protocol_key in self._seen:
                 continue
+            checked.add(key)
             if await self._try_recognize(message) is not None:
                 eligible.add(key)
         return eligible
