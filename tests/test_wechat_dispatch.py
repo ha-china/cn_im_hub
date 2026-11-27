@@ -21,13 +21,15 @@ tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
 original = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "WeixinClient")
 names = {"start", "stop", "_message_key", "_prune_seen", "_remember_context", "_enqueue_batch",
          "_verify_disk", "_persist_locked", "_async_save_state", "_accept_batch",
-         "_mark_running", "_finish_entry", "_run_normal", "_fast_done", "_dispatch_pending"}
+         "_mark_running", "_finish_entry", "_run_normal", "_fast_done", "_dispatch_pending",
+         "_query_text_key", "_open_query_keys", "_classify_batch", "_run_fast"}
 methods = [node for node in original.body if isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and node.name in names]
 cls = ast.ClassDef(name="Dispatch", bases=[], keywords=[], body=methods, decorator_list=[])
 module = ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[]))
 ns = dict(asyncio=asyncio, copy=copy, json=json, time=time, Any=Any, _LOGGER=logging.getLogger(__name__),
           _DEDUP_TTL=86400, _MAX_SEEN=2048, _MAX_NORMAL_TASKS=2, _MAX_FAST_TASKS=2,
-          _MESSAGE_TIMEOUT=180)
+          _MESSAGE_TIMEOUT=180, _QUERY_TIMEOUT=5, _FAST_SEND_TIMEOUT=15,
+          FastQuery=Any, PROVIDER_WECHAT="wechat")
 exec(compile(module, str(SOURCE), "exec"), ns)
 Dispatch = ns["Dispatch"]
 
@@ -58,7 +60,8 @@ class Store:
 
 
 def msg(i, text, sender="a"):
-    return {"message_id": i, "from_user_id": sender, "context_token": str(i), "text": text}
+    return {"message_id": i, "from_user_id": sender, "context_token": str(i), "text": text,
+            "item_list": [{"type": 1, "text_item": {"text": text}}]}
 
 
 class DispatchTest(unittest.IsolatedAsyncioTestCase):
@@ -100,6 +103,7 @@ class DispatchTest(unittest.IsolatedAsyncioTestCase):
 
         async def fast(sender, entry, query):
             self.replies.append(query)
+            entry["coalesce_closed"] = True
             await d._finish_entry(entry)
 
         d._handle_message = normal
@@ -156,7 +160,10 @@ class DispatchTest(unittest.IsolatedAsyncioTestCase):
                 await self.until(lambda: "a" not in self.d._normal_tasks)
             return None
         self.d._try_recognize = recognize
-        await self.enqueue(msg(1, "slow"), msg(2, "normal2"), msg(3, "normal3"))
+        messages = [msg(1, "slow"), msg(2, "normal2"), msg(3, "normal3")]
+        for message in messages:
+            message.pop("item_list")  # legacy/non-plain lane: exercise dispatcher race
+        await self.enqueue(*messages)
         await self.until(lambda: len(self.replies) == 3)
         self.assertEqual(self.started, ["slow", "normal2", "normal3"])
 
@@ -271,6 +278,131 @@ class DispatchTest(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("slow", self.replies)
         finally:
             ns["_MESSAGE_TIMEOUT"] = old_timeout
+
+    async def test_batch_repeated_read_only_query_coalesces_and_ids_stay_seen(self):
+        await self.enqueue(msg(1, "slow"), msg(2, "fastwater"), msg(3, "fastwater"), msg(4, "fastwater"))
+        await self.until(lambda: self.replies == ["fastwater"])
+        self.assertTrue(all(f"a:message_id:{i}" in self.d._seen for i in (2, 3, 4)))
+        self.assertNotIn("fastwater", self.started)
+        self.release.set()
+        await self.until(lambda: not self.d._pending)
+
+    async def test_running_query_and_send_wait_coalesce_then_new_query_after_ack(self):
+        d = self.d
+        entered = asyncio.Event()
+        send = asyncio.Event()
+        async def fast(sender, entry, query):
+            entered.set()
+            await send.wait()
+            self.replies.append(query)
+            entry["coalesce_closed"] = True
+            await d._finish_entry(entry)
+        d._run_fast = fast
+        await self.enqueue(msg(1, "fastwater"))
+        await entered.wait()
+        await self.enqueue(msg(2, "fastwater"), msg(3, "fastwater"))
+        self.assertEqual(len(d._pending), 1)
+        send.set()
+        await self.until(lambda: self.replies == ["fastwater"])
+        await self.enqueue(msg(4, "fastwater"))
+        await self.until(lambda: self.replies == ["fastwater", "fastwater"])
+
+    async def test_different_senders_and_different_queries_not_coalesced(self):
+        await self.enqueue(msg(1, "fastwater"), msg(2, "fastwater", "b"),
+                           msg(3, "fastgas"), msg(4, "fasttemp"))
+        await self.until(lambda: len(self.replies) == 4)
+        self.assertCountEqual(self.replies, ["fastwater", "fastwater", "fastgas", "fasttemp"])
+
+    async def test_unrecognized_control_and_llm_requests_not_coalesced(self):
+        await self.enqueue(msg(1, "turn light on"), msg(2, "turn light on"),
+                           msg(3, "explain electricity"), msg(4, "explain electricity"))
+        await self.until(lambda: len(self.replies) == 4)
+        self.assertEqual(self.replies, ["turn light on", "turn light on",
+                                        "explain electricity", "explain electricity"])
+
+    async def test_quoted_voice_and_mixed_media_not_eligible(self):
+        d = self.d
+        quoted = msg(1, "fastwater")
+        quoted["item_list"][0]["ref_msg"] = {}
+        voice = msg(2, "fastwater")
+        voice["item_list"] = [{"type": 3, "voice_item": {"text": "fastwater"}}]
+        mixed = msg(3, "fastwater")
+        mixed["item_list"].append({"type": 2})
+        for message in (quoted, voice, mixed):
+            self.assertIsNone(d._query_text_key(message))
+        self.assertEqual(await d._classify_batch([quoted, voice, mixed], set()), set())
+
+    async def test_whitespace_only_normalization(self):
+        d = self.d
+        self.assertEqual(d._query_text_key(msg(1, " fastwater ")), ("a", "fastwater"))
+        self.assertNotEqual(d._query_text_key(msg(1, "fastwater?")), d._query_text_key(msg(2, "fastwater")))
+
+    async def test_coalesced_batch_write_failure_does_not_consume_new_ids(self):
+        d = self.d
+        await d.stop()
+        await d._accept_batch("cursor", [msg(1, "fastwater")])
+        d._store.fail = True
+        with self.assertRaises(OSError):
+            await d._accept_batch("new_cursor", [msg(2, "fastwater")])
+        self.assertEqual(len(d._pending), 1)
+        self.assertNotIn("a:message_id:2", d._seen)
+        self.assertEqual(d._sync_buf, "cursor")
+        d._store.fail = False
+        await d._accept_batch("new_cursor", [msg(2, "fastwater")])
+        self.assertEqual(len(d._pending), 1)
+        self.assertIn("a:message_id:2", d._seen)
+
+    async def test_ack_and_failure_release_before_cleanup_actual_fast_worker(self):
+        d = self.d
+        d._run_fast = Dispatch._run_fast.__get__(d)
+        d._tracker = None
+        d._base_url = "test"
+        d._token = "test"
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        original_finish = d._finish_entry
+        async def finish(entry):
+            entered.set()
+            await release.wait()
+            await original_finish(entry)
+        async def execute(hass, query):
+            return query
+        async def send(hass, **kwargs):
+            self.replies.append(kwargs["text"])
+            if kwargs["text"] == "fastfail":
+                raise OSError("send failure")
+        d._finish_entry = finish
+        ns["execute_fast_query"] = execute
+        ns["async_send_weixin_text"] = send
+        try:
+            await self.enqueue(msg(1, "fastfail"))
+            await entered.wait()
+            self.assertTrue(d._pending[0]["coalesce_closed"])
+            await self.enqueue(msg(2, "fastfail"))
+            await self.until(lambda: self.replies == ["fastfail", "fastfail"])
+            self.assertEqual(len(d._pending), 2)
+        finally:
+            release.set()
+        await self.until(lambda: not d._pending)
+
+    async def test_restart_read_only_marker_revalidated_without_agent_fallback(self):
+        d = self.d
+        await d.stop()
+        d._store.data = {
+            "get_updates_buf": "saved", "context_tokens": {"a": "token"},
+            "pending": [{"state": "queued", "msg": msg(1, "fastwater"), "read_only": True}],
+        }
+        async def recognize(message):
+            return None
+        async def fast(sender, entry, query):
+            self.assertIsNone(query)
+            self.replies.append("config changed")
+            await d._finish_entry(entry)
+        d._try_recognize = recognize
+        d._run_fast = fast
+        await d.start()
+        await self.until(lambda: self.replies == ["config changed"] and not d._pending)
+        self.assertEqual(self.started, [])
 
 
 if __name__ == "__main__":

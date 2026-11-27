@@ -274,7 +274,10 @@ class WeixinClient:
                         self._account_id,
                     )
                     continue
-                self._pending.append({"state": "queued", "msg": entry["msg"]})
+                recovered = {"state": "queued", "msg": entry["msg"]}
+                if entry.get("read_only") is True:
+                    recovered["read_only"] = True
+                self._pending.append(recovered)
                 # Stored context_tokens already contains the newest token.
                 # Do not overwrite it with an older queued message.
         self._stopping = False
@@ -850,8 +853,61 @@ class WeixinClient:
         if sender and token:
             self._context_tokens[sender] = token
 
-    def _enqueue_batch(self, batch: list[dict[str, Any]]) -> None:
+    @staticmethod
+    def _query_text_key(message: dict[str, Any]) -> tuple[str, str] | None:
+        """Only exact plain text; exclude quotes, voice, files and mixed items."""
+        sender = str(message.get("from_user_id") or "").strip()
+        items = message.get("item_list")
+        if not sender or not isinstance(items, list) or len(items) != 1:
+            return None
+        item = items[0]
+        if not isinstance(item, dict) or item.get("type") != 1 or "ref_msg" in item:
+            return None
+        text_item = item.get("text_item")
+        if not isinstance(text_item, dict):
+            return None
+        text = text_item.get("text")
+        return (sender, text.strip()) if isinstance(text, str) and text.strip() else None
+
+    def _open_query_keys(self) -> set[tuple[str, str]]:
+        keys = set()
+        for entry in self._pending:
+            if entry.get("read_only") is True and not entry.get("coalesce_closed"):
+                key = self._query_text_key(entry["msg"])
+                if key is not None:
+                    keys.add(key)
+        return keys
+
+    async def _classify_batch(
+        self, batch: list[dict[str, Any]], arrived_open: set[tuple[str, str]]
+    ) -> set[tuple[str, str]]:
+        """Classify each new exact text once per batch, without executing it."""
+        eligible = set()
+        checked = set(arrived_open)
+        for message in batch:
+            key = self._query_text_key(message)
+            if key is None or key in checked:
+                continue
+            checked.add(key)
+            protocol_key = self._message_key(message)
+            if protocol_key is not None and protocol_key in self._seen:
+                continue
+            if await self._try_recognize(message) is not None:
+                eligible.add(key)
+        return eligible
+
+    def _enqueue_batch(
+        self,
+        batch: list[dict[str, Any]],
+        eligible: set[tuple[str, str]] | None = None,
+        arrived_open: set[tuple[str, str]] | None = None,
+    ) -> None:
         self._prune_seen()
+        eligible = eligible or set()
+        # Capture arrival before recognition / storage waits. A reply that
+        # finishes during those waits must not turn an earlier duplicate into
+        # a new request. Conversely, a reply already sent is never a cache.
+        open_queries = set(arrived_open or ())
         pending_keys = {self._message_key(entry["msg"]) for entry in self._pending}
         for message in batch:
             key = self._message_key(message)
@@ -859,10 +915,18 @@ class WeixinClient:
                 _LOGGER.debug("Weixin duplicate message ignored")
                 continue
             self._remember_context(message)
-            self._pending.append({"state": "queued", "msg": message})
             if key is not None:
                 self._seen[key] = time.time()
                 pending_keys.add(key)
+            query_key = self._query_text_key(message)
+            if query_key is not None and query_key in open_queries:
+                _LOGGER.debug("Weixin pending read-only query coalesced")
+                continue
+            entry = {"state": "queued", "msg": message}
+            if query_key is not None and query_key in eligible:
+                entry["read_only"] = True
+                open_queries.add(query_key)
+            self._pending.append(entry)
         self._prune_seen()
 
     @staticmethod
@@ -912,13 +976,15 @@ class WeixinClient:
         """Stage a whole poll response; never poll past an unverified snapshot."""
         if not batch and (not new_buf or new_buf == self._sync_buf):
             return
+        arrived_open = self._open_query_keys()
+        eligible = await self._classify_batch(batch, arrived_open)
         async with self._state_lock:
             previous = (self._sync_buf, list(self._pending),
                         dict(self._seen), dict(self._context_tokens))
             try:
                 if new_buf:
                     self._sync_buf = new_buf
-                self._enqueue_batch(batch)
+                self._enqueue_batch(batch, eligible, arrived_open)
                 await self._persist_locked()
             except BaseException:
                 self._sync_buf, self._pending, self._seen, self._context_tokens = previous
@@ -992,7 +1058,7 @@ class WeixinClient:
             _LOGGER.debug("Weixin fast recognition unavailable", exc_info=True)
             return None
 
-    async def _run_fast(self, sender: str, entry: dict[str, Any], query: FastQuery) -> None:
+    async def _run_fast(self, sender: str, entry: dict[str, Any], query: FastQuery | None) -> None:
         started = time.monotonic()
         try:
             token = str(entry["msg"].get("context_token") or "").strip() or self._context_tokens.get(sender)
@@ -1006,9 +1072,14 @@ class WeixinClient:
                     ), timeout=_FAST_SEND_TIMEOUT,
                 )
             try:
-                reply = await asyncio.wait_for(
-                    execute_fast_query(self._hass, query), timeout=_QUERY_TIMEOUT
-                )
+                if query is None:
+                    # A persisted read-only request may outlive an intent
+                    # reload. Never fall back to a tool-enabled agent here.
+                    reply = "本地查询配置已变更，请重新发送。"
+                else:
+                    reply = await asyncio.wait_for(
+                        execute_fast_query(self._hass, query), timeout=_QUERY_TIMEOUT
+                    )
             except Exception:
                 _LOGGER.exception("Weixin local fast query failed")
                 reply = "本地查询暂时失败，请稍后重试。"
@@ -1025,6 +1096,9 @@ class WeixinClient:
         except Exception:
             _LOGGER.exception("Weixin fast reply failed; not replaying")
         finally:
+            # End coalescing at send acknowledgement or terminal failure,
+            # before potentially slow durable cleanup. No post-reply cooldown.
+            entry["coalesce_closed"] = True
             try:
                 await self._finish_entry(entry)
             finally:
@@ -1050,6 +1124,18 @@ class WeixinClient:
                         continue
                     message = entry["msg"]
                     sender = str(message.get("from_user_id") or "").strip()
+                    if entry.get("read_only") is True:
+                        # A coalescible request must stay on the read-only route,
+                        # even when idle; an arbitrary configured agent can act.
+                        if len(self._fast_tasks) >= _MAX_FAST_TASKS:
+                            continue
+                        query = await self._try_recognize(message)
+                        if await self._mark_running(entry):
+                            _LOGGER.debug("Weixin dispatch route=local_fast pending=%d", len(self._pending))
+                            task = asyncio.create_task(self._run_fast(sender, entry, query))
+                            self._fast_tasks.add(task)
+                            task.add_done_callback(self._fast_done)
+                        continue
                     if (sender not in blocked_senders and sender not in self._normal_tasks
                             and len(self._normal_tasks) < _MAX_NORMAL_TASKS):
                         if await self._mark_running(entry):
