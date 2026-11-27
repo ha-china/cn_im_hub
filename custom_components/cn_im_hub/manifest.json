@@ -4,7 +4,8 @@
   "after_dependencies": [
     "conversation",
     "assist_pipeline",
-    "http"
+    "http",
+    "intent_script"
   ],
   "codeowners": [
     "@ha-china"

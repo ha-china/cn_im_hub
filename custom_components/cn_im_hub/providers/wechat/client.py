@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import logging
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -30,6 +32,7 @@ from ...const import (
     WECHAT_DEFAULT_BASE_URL,
 )
 from ...core.known_targets import async_get_tracker
+from ...core.fast_query import FastQuery, recognize_fast_query, execute_fast_query
 from ...models import ProviderRuntime
 from ...media.rich_media import (
     FileSegment,
@@ -64,6 +67,12 @@ from .flow import WeixinProviderSubentryFlow
 
 _LOGGER = logging.getLogger(__name__)
 _STORE_VERSION = 1
+_MAX_PENDING = 100
+_MAX_NORMAL_TASKS = 2
+_DEDUP_TTL = 86400
+_MAX_SEEN = 2048
+_QUERY_TIMEOUT = 5
+_CONVERSATION_TIMEOUT = 120
 _RECONNECT_BASE_DELAY_SECONDS = 5
 _MAX_RETRY_DELAY_SECONDS = 300
 _SESSION_PAUSE_SECONDS = 3600
@@ -214,6 +223,11 @@ class WeixinClient:
         self._store: Store[dict[str, Any]] = Store(hass, _STORE_VERSION, f"cn_im_hub_wechat_{subentry_id}")
         self._sync_buf = ""
         self._pending: list[dict[str, Any]] = []
+        self._seen: dict[str, float] = {}
+        self._state_lock = asyncio.Lock()
+        self._dispatch_event = asyncio.Event()
+        self._dispatch_task: asyncio.Task[None] | None = None
+        self._normal_tasks: dict[str, asyncio.Task[None]] = {}
         self._pause_until = 0.0
         self._tracker = None
         self._typing_tickets: dict[str, tuple[str, float]] = {}
@@ -229,6 +243,11 @@ class WeixinClient:
         tokens = data.get("context_tokens") or {}
         if isinstance(tokens, dict):
             self._context_tokens = {str(key): str(value) for key, value in tokens.items() if value}
+        seen = data.get("seen")
+        if isinstance(seen, dict):
+            self._seen = {str(k): v for k, v in seen.items()
+                          if isinstance(v, (int, float))}
+        self._prune_seen()
         pending = data.get("pending")
         if isinstance(pending, list):
             for entry in pending:
@@ -243,7 +262,11 @@ class WeixinClient:
                     )
                     continue
                 self._pending.append({"state": "queued", "msg": entry["msg"]})
+                self._remember_context(entry["msg"])
         self._stopping = False
+        if self._dispatch_task is None:
+            self._dispatch_task = asyncio.create_task(self._dispatch_pending())
+            self._dispatch_event.set()
         if self._task is None:
             self._task = asyncio.create_task(self._run())
         await self._notify_start()
@@ -255,6 +278,17 @@ class WeixinClient:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
+        if self._dispatch_task is not None:
+            self._dispatch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._dispatch_task
+            self._dispatch_task = None
+        tasks = list(self._normal_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._normal_tasks.clear()
         self._status = "disconnected"
         await self._notify_stop()
 
@@ -354,6 +388,10 @@ class WeixinClient:
         consecutive_failures = 0
         next_timeout_ms = 35_000
         while not self._stopping:
+            # Backpressure: leave additional messages on the server, not lost.
+            if len(self._pending) >= _MAX_PENDING:
+                await asyncio.sleep(0.2)
+                continue
             remaining_pause = self._remaining_pause_seconds()
             if remaining_pause > 0:
                 self._status = "paused"
@@ -407,13 +445,11 @@ class WeixinClient:
                     self._sync_buf = new_buf
                 batch = [m for m in (resp.get("msgs") or []) if isinstance(m, dict)]
                 if batch:
-                    self._pending.extend({"state": "queued", "msg": m} for m in batch)
-                # Persist cursor and queued messages in one write so a restart
-                # cannot advance past unprocessed messages.
+                    self._enqueue_batch(batch)
+                # Persist cursor and queued messages before dispatch.
                 if buf_changed or batch:
                     await self._async_save_state()
-                if batch:
-                    await self._drain_pending()
+                self._dispatch_event.set()
             except asyncio.CancelledError:
                 raise
             except Exception as err:
@@ -596,11 +632,6 @@ class WeixinClient:
                 target_type="user_id",
                 display_name=from_user_id,
             )
-        context_token = str(message.get("context_token") or "").strip()
-        if context_token:
-            self._context_tokens[from_user_id] = context_token
-            await self._async_save_state()
-
         command = parse_command(text)
         if command is None:
             return
@@ -619,14 +650,22 @@ class WeixinClient:
             )
         )
         try:
-            reply = await execute_command(
-                self._hass,
-                command,
-                conversation_id=f"wechat:{self._account_id}:{from_user_id}",
-                agent_id=self._conversation_agent_id or None,
-                extra_system_prompt=build_wechat_prompt(),
-                user_id=from_user_id,
-            )
+            try:
+                reply = await asyncio.wait_for(
+                    execute_command(
+                        self._hass,
+                        command,
+                        conversation_id=f"wechat:{self._account_id}:{from_user_id}",
+                        agent_id=self._conversation_agent_id or None,
+                        extra_system_prompt=build_wechat_prompt(),
+                        user_id=from_user_id,
+                    ),
+                    timeout=_CONVERSATION_TIMEOUT,
+                )
+            except TimeoutError:
+                # An action may already have happened. Never replay it.
+                reply = "本次处理超时，执行结果可能尚未确认，请先核实设备状态。"
+                _LOGGER.warning("Weixin conversation timed out")
             if progress_task is not None:
                 progress_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -785,44 +824,150 @@ class WeixinClient:
                 await typing_task
             await self._set_typing(from_user_id, resolved_context, status=2)
 
+    def _message_key(self, message: dict[str, Any]) -> str | None:
+        sender = str(message.get("from_user_id") or "").strip()
+        for field in ("message_id", "client_id"):
+            value = message.get(field)
+            if isinstance(value, (str, int)) and not isinstance(value, bool) and str(value).strip() not in ("", "0"):
+                return f"{sender}:{field}:{value}"
+        # Never deduplicate by content: repeated queries may be intentional.
+        return None
+
+    def _prune_seen(self) -> None:
+        cutoff = time.time() - _DEDUP_TTL
+        self._seen = dict(sorted(
+            ((k, v) for k, v in self._seen.items() if v >= cutoff),
+            key=lambda item: item[1],
+        )[-_MAX_SEEN:])
+
+    def _remember_context(self, message: dict[str, Any]) -> None:
+        sender = str(message.get("from_user_id") or "").strip()
+        token = str(message.get("context_token") or "").strip()
+        if sender and token:
+            self._context_tokens[sender] = token
+
+    def _enqueue_batch(self, batch: list[dict[str, Any]]) -> None:
+        self._prune_seen()
+        pending_keys = {self._message_key(entry["msg"]) for entry in self._pending}
+        for message in batch:
+            key = self._message_key(message)
+            if key is not None and (key in self._seen or key in pending_keys):
+                continue
+            self._remember_context(message)
+            self._pending.append({"state": "queued", "msg": message})
+            if key is not None:
+                self._seen[key] = time.time()
+                pending_keys.add(key)
+        self._prune_seen()
+
     async def _async_save_state(self) -> None:
-        await self._store.async_save(
-            {
+        # Store writes must not overtake each other or retain mutable references.
+        async with self._state_lock:
+            await self._store.async_save(copy.deepcopy({
                 "get_updates_buf": self._sync_buf,
                 "context_tokens": self._context_tokens,
                 "pending": self._pending,
-            }
-        )
+                "seen": self._seen,
+            }))
 
-    async def _drain_pending(self) -> None:
-        """Process queued inbound messages, persisting progress after each one.
-
-        Mirrors upstream openclaw-weixin 3.0.0-beta-0: raw messages are stored
-        together with the poll cursor atomically, so a restart mid-batch no
-        longer loses the not-yet-processed messages (the cursor used to be
-        saved before processing). Each entry is marked running before
-        processing and removed afterwards; an entry that was mid-processing at
-        restart is dropped by start() instead of being re-run.
-        """
-        while self._pending and not self._stopping:
-            entry = self._pending[0]
-            if entry.get("state") == "running":
-                self._pending.pop(0)
-                await self._async_save_state()
-                continue
-            entry["state"] = "running"
+    async def _mark_running(self, entry: dict[str, Any]) -> None:
+        entry["state"] = "running"
+        try:
             await self._async_save_state()
+        except Exception:
+            entry["state"] = "queued"
+            raise
+
+    async def _finish_entry(self, entry: dict[str, Any]) -> None:
+        if not self._stopping:
+            self._pending[:] = [item for item in self._pending if item is not entry]
             try:
-                await self._handle_message(entry["msg"])
-            finally:
-                if self._stopping:
-                    # stop()/restart hit mid-processing: keep the running mark
-                    # so start() logs the interrupted message instead of it
-                    # being silently discarded.
-                    pass
-                elif self._pending and self._pending[0] is entry:
-                    self._pending.pop(0)
-                    await self._async_save_state()
+                await self._async_save_state()
+            except Exception:
+                _LOGGER.exception("Failed to persist completed Weixin message")
+        self._dispatch_event.set()
+
+    async def _run_normal(self, sender: str, entry: dict[str, Any]) -> None:
+        try:
+            await self._handle_message(entry["msg"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Weixin message handling failed; not replaying")
+        finally:
+            self._normal_tasks.pop(sender, None)
+            await self._finish_entry(entry)
+
+    async def _try_recognize(self, message: dict[str, Any]) -> FastQuery | None:
+        if extract_inbound_media(message):
+            return None
+        text = extract_text_body(message)
+        if not text:
+            return None
+        try:
+            return await asyncio.wait_for(
+                recognize_fast_query(self._hass, text), timeout=_QUERY_TIMEOUT
+            )
+        except TimeoutError:
+            return None
+
+    async def _run_fast(self, sender: str, entry: dict[str, Any], query: FastQuery) -> None:
+        try:
+            token = self._context_tokens.get(sender)
+            if not sender or not token:
+                return
+            if self._tracker is not None:
+                await self._tracker.async_record(
+                    provider=PROVIDER_WECHAT, target=sender,
+                    target_type="user_id", display_name=sender,
+                )
+            try:
+                reply = await asyncio.wait_for(
+                    execute_fast_query(self._hass, query), timeout=_QUERY_TIMEOUT
+                )
+            except Exception:
+                _LOGGER.exception("Weixin local fast query failed")
+                reply = "本地查询暂时失败，请稍后重试。"
+            # Fast responses are plain text, never interpreted as media tags.
+            await async_send_weixin_text(
+                self._hass, base_url=self._base_url, token=self._token,
+                to_user_id=sender, context_token=token, text=reply,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOGGER.exception("Weixin fast reply failed; not replaying")
+        finally:
+            await self._finish_entry(entry)
+
+    async def _dispatch_pending(self) -> None:
+        """Keep each conversational lane ordered; bypass it only for read-only scripts."""
+        while not self._stopping:
+            await self._dispatch_event.wait()
+            self._dispatch_event.clear()
+            try:
+                for entry in list(self._pending):
+                    if self._stopping:
+                        return
+                    if entry.get("state") != "queued":
+                        continue
+                    message = entry["msg"]
+                    sender = str(message.get("from_user_id") or "").strip()
+                    if sender not in self._normal_tasks and len(self._normal_tasks) < _MAX_NORMAL_TASKS:
+                        await self._mark_running(entry)
+                        self._normal_tasks[sender] = asyncio.create_task(self._run_normal(sender, entry))
+                        continue
+                    # Only bypass an occupied lane when strict read-only recognition succeeds.
+                    query = await self._try_recognize(message)
+                    if query is not None:
+                        await self._mark_running(entry)
+                        await self._run_fast(sender, entry, query)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _LOGGER.exception("Weixin dispatch failed; retrying queued messages")
+                await asyncio.sleep(1)
+                self._dispatch_event.set()
 
     def _pause_session(self) -> None:
         self._pause_until = asyncio.get_running_loop().time() + _SESSION_PAUSE_SECONDS

@@ -88,5 +88,6 @@ async def execute_command(
             conversation_id=conversation_id,
             agent_id=agent_id,
             extra_system_prompt=_resolve_channel_context(hass, conversation_id, extra_system_prompt),
+            retry_after_dispatch=not conversation_id.startswith("wechat:"),
         )
     return "Only natural language conversations are currently supported."

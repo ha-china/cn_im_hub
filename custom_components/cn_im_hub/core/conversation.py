@@ -61,9 +61,11 @@ async def ask_home_assistant(
     conversation_id: str,
     agent_id: str | None,
     extra_system_prompt: str | None = None,
+    retry_after_dispatch: bool = True,
 ) -> str:
     """Route text through Home Assistant conversation APIs."""
     resolved_agent_id = _normalize_agent_id_for_runtime(hass, str(agent_id or "").strip())
+    dispatched = False
     try:
         from homeassistant.components import conversation as conversation_component
 
@@ -85,12 +87,16 @@ async def ask_home_assistant(
             if "extra_system_prompt" in signature.parameters and extra_system_prompt:
                 kwargs["extra_system_prompt"] = extra_system_prompt
 
+            dispatched = True
             result = await conversation_component.async_converse(**kwargs)
             reply = extract_speech_any(result)
             if reply:
                 return reply
     except Exception as err:
         _LOGGER.debug("cn_im_hub async_converse failed with agent_id=%s: %s", resolved_agent_id, err)
+
+    if dispatched and not retry_after_dispatch:
+        return "本次处理未返回有效回复，请先核实执行结果后再试。"
 
     if hass.services.has_service("conversation", "process"):
         data: dict[str, Any] = {
